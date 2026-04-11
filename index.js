@@ -1,8 +1,7 @@
 "use strict";
 
 // ─────────────────────────────────────────────────────
-//  NeuroBot v6 — Proton/MD style recursive pattern
-//  515 → new socket created, pair code re-requested
+//  NeuroBot v7 — shared state, no pair code after open
 // ─────────────────────────────────────────────────────
 
 const { Telegraf } = require("telegraf");
@@ -10,7 +9,6 @@ const {
   default: makeWASocket,
   useMultiFileAuthState,
   makeCacheableSignalKeyStore,
-  DisconnectReason,
   jidNormalizedUser,
   fetchLatestBaileysVersion,
 } = require("@whiskeysockets/baileys");
@@ -34,8 +32,8 @@ const TEMP_DIR          = path.join(__dirname, "temp");
 [SESSIONS_DIR, TEMP_DIR].forEach(d => fs.mkdirSync(d, { recursive: true }));
 
 const bot     = new Telegraf(BOT_TOKEN);
-const pending = new Map(); // uid → { stage, photoPath }
-const active  = new Map(); // uid → sock
+const pending = new Map();
+const active  = new Map();
 
 // ═══════════════════════════════════════════════════
 //  TELEGRAM
@@ -73,9 +71,7 @@ bot.on("photo", async ctx => {
     const photoPath = path.join(TEMP_DIR, `${uid}.jpg`);
     await dlFile(link.href, photoPath);
     pending.set(uid, { stage: "number", photoPath });
-    ctx.replyWithMarkdown(
-      `✅ *Photo mil gaya!*\n\n📱 Number bhejo:\nExample: \`917288837763\``
-    );
+    ctx.replyWithMarkdown(`✅ *Photo mil gaya!*\n\n📱 Number bhejo:\nExample: \`917288837763\``);
   } catch (e) { ctx.reply("❌ " + e.message); }
 });
 
@@ -98,27 +94,34 @@ bot.on("text", async ctx => {
   if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(dir, { recursive: true });
 
-  connectWA({ uid, phone, photoPath: state.photoPath, ctx, isReconnect: false });
+  // Shared state object — passed into every recursive call
+  const shared = {
+    codeSentToUser : false,  // user ko ek baar hi code dikhao
+    connected      : false,  // true after first "open"
+    finished       : false,  // true after post-connect flow done
+  };
+
+  connectWA({ uid, phone, photoPath: state.photoPath, ctx, shared });
 });
 
 // ═══════════════════════════════════════════════════
-//  CORE: connectWA — recursive on 515
+//  CORE: connectWA
 // ═══════════════════════════════════════════════════
-async function connectWA({ uid, phone, photoPath, ctx, isReconnect }) {
+async function connectWA({ uid, phone, photoPath, ctx, shared }) {
+  // If already connected or finished, don't start another socket
+  if (shared.connected || shared.finished) return;
+
   const dir = path.join(SESSIONS_DIR, uid);
   fs.mkdirSync(dir, { recursive: true });
 
   const { state, saveCreds } = await useMultiFileAuthState(dir);
   const logger = pino({ level: "silent" });
 
-  // WA version
   let version = [2, 3000, 1021022925];
   try {
     const v = await fetchLatestBaileysVersion();
     if (v?.version) version = v.version;
   } catch (_) {}
-
-  console.log(`[${uid}] ${isReconnect ? "reconnect" : "start"} | version: ${version.join(".")}`);
 
   const sock = makeWASocket({
     version,
@@ -138,8 +141,7 @@ async function connectWA({ uid, phone, photoPath, ctx, isReconnect }) {
   active.set(uid, sock);
   sock.ev.on("creds.update", saveCreds);
 
-  let codeSent = false;
-  let openDone = false;
+  let pairRequested = false; // per-socket flag
 
   sock.ev.on("connection.update", async update => {
     const { connection, lastDisconnect } = update;
@@ -147,18 +149,21 @@ async function connectWA({ uid, phone, photoPath, ctx, isReconnect }) {
 
     console.log(`[${uid}] ${connection ?? "?"} | ${errCode ?? "-"}`);
 
-    // ── Pair code on connecting ──────────────────────────────────
-    if (connection === "connecting" && !codeSent) {
-      codeSent = true;
-      await sleep(4000); // noise handshake time
+    // ── connecting → request pair code ──────────────────────────
+    if (connection === "connecting" && !pairRequested && !shared.connected && !shared.finished) {
+      pairRequested = true;
+      await sleep(4000);
+
+      // Double-check: if connected during sleep, skip
+      if (shared.connected || shared.finished) return;
 
       try {
         const raw  = await sock.requestPairingCode(phone);
         const code = raw.match(/.{1,4}/g).join("-");
-        console.log(`[${uid}] code: ${code}`);
 
-        if (!isReconnect) {
-          // First time — show code to user
+        if (!shared.codeSentToUser) {
+          // First time — show user
+          shared.codeSentToUser = true;
           await ctx.replyWithMarkdown(
             `🔑 *Pair Code:*\n\n` +
             `\`${code}\`\n\n` +
@@ -167,75 +172,61 @@ async function connectWA({ uid, phone, photoPath, ctx, isReconnect }) {
             `2️⃣ Link a Device\n` +
             `3️⃣ Link with phone number instead\n` +
             `4️⃣ Code enter karo\n\n` +
-            `⏰ _60 sec me expire — WA me jaldi enter karo_\n` +
+            `⏰ _60 sec me expire_\n` +
             `⏳ _Waiting..._`
           );
-        } else {
-          // Reconnect — just log, don't spam user
-          console.log(`[${uid}] Reconnect pair code sent silently`);
         }
+        // On reconnect sockets — just log, never show user again
+        console.log(`[${uid}] pair code: ${code}`);
       } catch (e) {
         console.error(`[${uid}] pair code error: ${e.message}`);
-        codeSent = false; // allow retry
+        pairRequested = false;
       }
     }
 
-    // ── Open → run post-connect flow ─────────────────────────────
-    if (connection === "open" && !openDone) {
-      openDone = true;
+    // ── open → run post-connect ──────────────────────────────────
+    if (connection === "open") {
+      if (shared.connected || shared.finished) return; // guard
+      shared.connected = true;
       await saveCreds();
-      console.log(`[${uid}] OPEN — connected!`);
-      await runPostConnect({ uid, phone, photoPath, sock, ctx });
+      console.log(`[${uid}] OPEN!`);
+      runPostConnect({ uid, phone, photoPath, sock, ctx, shared });
     }
 
-    // ── Close handling ────────────────────────────────────────────
+    // ── close ────────────────────────────────────────────────────
     if (connection === "close") {
+      active.delete(uid);
 
-      if (openDone) {
-        // Already done — normal post-logout close, ignore
-        active.delete(uid);
-        return;
-      }
+      // Already connected/done — post-connect handles its own cleanup
+      if (shared.connected || shared.finished) return;
 
       if (errCode === 515) {
-        // Stream restart — Baileys closes old socket, we create new one
-        console.log(`[${uid}] 515 stream restart → new socket`);
-        active.delete(uid);
+        console.log(`[${uid}] 515 → new socket`);
         await sleep(1500);
-        connectWA({ uid, phone, photoPath, ctx, isReconnect: true });
+        connectWA({ uid, phone, photoPath, ctx, shared });
         return;
       }
 
       if (errCode === 401 || errCode === 403) {
-        console.log(`[${uid}] ${errCode} auth fail — cleanup`);
-        active.delete(uid);
-        cleanDir(uid);
         await ctx.replyWithMarkdown(
-          `❌ *Auth Fail (${errCode})*\n\nWA linked devices me check karo. /pair se dobara try karo.`
+          `❌ *Auth Fail (${errCode})*\n\nWA Linked Devices check karo, sab logout karo.\n/pair se dobara try karo.`
         );
+        cleanDir(uid);
         return;
       }
 
-      // Other close — retry once
-      if (!isReconnect) {
-        console.log(`[${uid}] close ${errCode} → retry`);
-        active.delete(uid);
-        await sleep(2000);
-        connectWA({ uid, phone, photoPath, ctx, isReconnect: true });
-      } else {
-        active.delete(uid);
-        await ctx.replyWithMarkdown(
-          `❌ *Connection fail (${errCode ?? "unknown"})*\n/pair se dobara try karo.`
-        );
-      }
+      // Any other close during pairing — retry once
+      console.log(`[${uid}] close ${errCode} → retry`);
+      await sleep(2000);
+      connectWA({ uid, phone, photoPath, ctx, shared });
     }
   });
 }
 
 // ═══════════════════════════════════════════════════
-//  POST-CONNECT: DP → Sticker → Newsletter → Group → Logout
+//  POST-CONNECT
 // ═══════════════════════════════════════════════════
-async function runPostConnect({ uid, phone, photoPath, sock, ctx }) {
+async function runPostConnect({ uid, phone, photoPath, sock, ctx, shared }) {
   const self = jidNormalizedUser(sock.user.id);
 
   await ctx.replyWithMarkdown(
@@ -247,16 +238,13 @@ async function runPostConnect({ uid, phone, photoPath, sock, ctx }) {
   try {
     await sock.updateProfilePicture(self, fs.readFileSync(photoPath));
     await waMsg(sock, phone,
-      `✅ *Pair Ho Gaya!*\n\nNeuroBot se link! 🎉\n🖼️ DP set.\n📱 +${phone}\n⏳ Group join ho raha hai...`
+      `✅ *Pair Ho Gaya!*\n\nNeuroBot se link! 🎉\n🖼️ DP set.\n📱 +${phone}\n⏳ Group join...`
     );
-    await ctx.replyWithMarkdown(
-      `🖼️ *DP Ho Gayi!*\n\n🎭 Sticker ban raha hai...`
-    );
+    await ctx.replyWithMarkdown(`🖼️ *DP Ho Gayi!*\n\n🎭 Sticker...`);
   } catch (e) {
     console.error("[DP]", e.message);
     await ctx.replyWithMarkdown(`⚠️ DP fail: \`${e.message}\``);
   }
-
   await sleep(1500);
 
   // B. Sticker
@@ -272,7 +260,6 @@ async function runPostConnect({ uid, phone, photoPath, sock, ctx }) {
       `🎭 *Sticker Bheja!*\n📦 *${STICKER_PACK}* | ✍️ *${STICKER_AUTHOR}*\n\n📢 Newsletter...`
     );
   } catch (e) { console.error("[Sticker]", e.message); }
-
   await sleep(1500);
 
   // C. Newsletter
@@ -280,7 +267,6 @@ async function runPostConnect({ uid, phone, photoPath, sock, ctx }) {
     await sock.newsletterFollow(NEWSLETTER_JID);
     await ctx.replyWithMarkdown(`📢 *Newsletter Joined!*\n\n🔗 Group...`);
   } catch (e) { console.error("[Newsletter]", e.message); }
-
   await sleep(1500);
 
   // D. Group
@@ -319,13 +305,14 @@ async function runPostConnect({ uid, phone, photoPath, sock, ctx }) {
   await sleep(3000);
 
   // E. Logout + cleanup
+  shared.finished = true;
   try { await sock.logout(); } catch (_) {
     try { sock.end(); } catch (_) {}
   }
   active.delete(uid);
   cleanDir(uid);
   try { if (fs.existsSync(photoPath)) fs.unlinkSync(photoPath); } catch (_) {}
-  console.log(`[${uid}] Done. Cleaned.`);
+  console.log(`[${uid}] Done. Session cleaned. User can /pair again.`);
 }
 
 // ═══════════════════════════════════════════════════
