@@ -1,17 +1,16 @@
-// ╔═══════════════════════════════════════════════════════════════════╗
-// ║    NeuroBot — WhatsApp Pair Bot v4                               ║
-// ║    Baileys 7.0.0-rc.9 | Proven Working Pattern                  ║
-// ║    Photo → Pair → DP → Sticker → Newsletter → Group → Logout    ║
-// ╚═══════════════════════════════════════════════════════════════════╝
-
 "use strict";
 
-const { Telegraf } = require("telegraf");
+// ─────────────────────────────────────────────
+//  NeuroBot — WhatsApp Pair Bot v5 (Clean)
+//  Baileys 7.0.0-rc.9
+// ─────────────────────────────────────────────
+
+const { Telegraf }  = require("telegraf");
+const makeWASocket  = require("@whiskeysockets/baileys").default;
 const {
-  default: makeWASocket,
   useMultiFileAuthState,
-  DisconnectReason,
   makeCacheableSignalKeyStore,
+  DisconnectReason,
   jidNormalizedUser,
   fetchLatestBaileysVersion,
 } = require("@whiskeysockets/baileys");
@@ -22,450 +21,354 @@ const fs    = require("fs");
 const https = require("https");
 const http  = require("http");
 
-// ┌──────────────────────────────────────────────────────────────────┐
-// │                       CONFIG                                     │
-// └──────────────────────────────────────────────────────────────────┘
-const CONFIG = {
-  BOT_TOKEN         : "8192834277:AAGLXbshMUdUuUBw_Afwf4_Ebvqocmfc-ug",
-  GROUP_INVITE_LINK : "https://chat.whatsapp.com/XXXXXX",
-  NEWSLETTER_JID    : "120363407665192704@newsletter",
-  SESSIONS_DIR      : path.join(__dirname, "sessions"),
-  TEMP_DIR          : path.join(__dirname, "temp"),
-  STICKER_PACKNAME  : "Md",
-  STICKER_AUTHOR    : "Neurobot",
-};
+// ─── CONFIG (edit here) ──────────────────────
+const BOT_TOKEN         = "8192834277:AAGLXbshMUdUuUBw_Afwf4_Ebvqocmfc-ug";
+const GROUP_INVITE_LINK = "https://chat.whatsapp.com/XXXXXX";
+const NEWSLETTER_JID    = "120363407665192704@newsletter";
+const STICKER_PACK      = "Md";
+const STICKER_AUTHOR    = "Neurobot";
+const SESSIONS_DIR      = path.join(__dirname, "sessions");
+const TEMP_DIR          = path.join(__dirname, "temp");
+// ─────────────────────────────────────────────
 
-[CONFIG.SESSIONS_DIR, CONFIG.TEMP_DIR].forEach((d) => {
-  if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
+[SESSIONS_DIR, TEMP_DIR].forEach(d => fs.mkdirSync(d, { recursive: true }));
+
+const bot     = new Telegraf(BOT_TOKEN);
+const pending = new Map(); // userId → { stage, photoPath }
+const active  = new Map(); // userId → sock
+
+// ══════════════════════════════════════════════
+//  TELEGRAM HANDLERS
+// ══════════════════════════════════════════════
+
+bot.start(ctx => ctx.replyWithMarkdown(
+  `🤖 *NeuroBot*\n\n` +
+  `1️⃣ /pair — Shuru karo\n` +
+  `2️⃣ Photo bhejo\n` +
+  `3️⃣ WhatsApp number bhejo\n` +
+  `4️⃣ Pair code WA me enter karo\n\n` +
+  `• /cancel — Cancel`
+));
+
+bot.command("pair", ctx => {
+  const uid = String(ctx.from.id);
+  killSession(uid);
+  pending.set(uid, { stage: "photo" });
+  ctx.replyWithMarkdown("📸 *Photo bhejo* — yahi tumhara WA DP banega.");
 });
 
-// ┌──────────────────────────────────────────────────────────────────┐
-// │                      STATE MAPS                                  │
-// └──────────────────────────────────────────────────────────────────┘
-const pending  = new Map(); // userId → { stage, photoPath }
-const sessions = new Map(); // userId → { sock, number }
-
-// ┌──────────────────────────────────────────────────────────────────┐
-// │                    TELEGRAM BOT                                  │
-// └──────────────────────────────────────────────────────────────────┘
-const bot = new Telegraf(CONFIG.BOT_TOKEN);
-
-bot.start((ctx) => {
-  ctx.replyWithMarkdown(
-    `🤖 *NeuroBot — WhatsApp Pair*\n\n` +
-    `*Steps:*\n` +
-    `1️⃣ /pair — Shuru karo\n` +
-    `2️⃣ Photo bhejo (DP banega)\n` +
-    `3️⃣ WhatsApp number bhejo\n` +
-    `4️⃣ Pair code WhatsApp me enter karo\n\n` +
-    `✅ Baaki sab automatic!\n\n` +
-    `• /cancel — Cancel karo`
-  );
+bot.command("cancel", ctx => {
+  const uid = String(ctx.from.id);
+  killSession(uid);
+  pending.delete(uid);
+  ctx.reply("❌ Cancel. /pair se shuru karo.");
 });
 
-bot.command("pair", async (ctx) => {
-  const userId = String(ctx.from.id);
-  cleanupSession(userId);
-  pending.set(userId, { stage: "waiting_photo" });
-  await ctx.replyWithMarkdown(
-    `📸 *Photo Bhejo*\n\n` +
-    `Apna ek photo bhejo — yahi tumhara WhatsApp DP banega.`
-  );
-});
-
-bot.command("cancel", (ctx) => {
-  const userId = String(ctx.from.id);
-  cleanupSession(userId);
-  pending.delete(userId);
-  ctx.reply("❌ Cancel ho gaya. /pair se shuru karo.");
-});
-
-bot.command("status", (ctx) => {
-  const userId = String(ctx.from.id);
-  const s = sessions.get(userId);
-  if (!s) return ctx.reply("❌ Koi session nahi. /pair se shuru karo.");
-  ctx.replyWithMarkdown(`📊 Session active\n📱 \`+${s.number}\``);
-});
-
-// ── Photo handler ───────────────────────────────────────────────────
-bot.on("photo", async (ctx) => {
-  const userId = String(ctx.from.id);
-  const state  = pending.get(userId);
-  if (!state || state.stage !== "waiting_photo") return;
+bot.on("photo", async ctx => {
+  const uid   = String(ctx.from.id);
+  const state = pending.get(uid);
+  if (!state || state.stage !== "photo") return;
 
   try {
-    const photos    = ctx.message.photo;
-    const best      = photos[photos.length - 1];
-    const fileLink  = await ctx.telegram.getFileLink(best.file_id);
-    const photoPath = path.join(CONFIG.TEMP_DIR, `photo_${userId}.jpg`);
-    await downloadFile(fileLink.href, photoPath);
-
-    pending.set(userId, { stage: "waiting_number", photoPath });
-    await ctx.replyWithMarkdown(
-      `✅ *Photo Mil Gaya!*\n\n` +
-      `📱 *Number Bhejo*\n\n` +
-      `Country code ke saath:\nExample: \`917288837763\``
+    const best      = ctx.message.photo.at(-1);
+    const link      = await ctx.telegram.getFileLink(best.file_id);
+    const photoPath = path.join(TEMP_DIR, `${uid}.jpg`);
+    await dlFile(link.href, photoPath);
+    pending.set(uid, { stage: "number", photoPath });
+    ctx.replyWithMarkdown(
+      `✅ *Photo mil gaya!*\n\n` +
+      `📱 Ab number bhejo (country code ke saath):\n` +
+      `Example: \`917288837763\``
     );
-  } catch (err) {
-    ctx.reply(`❌ Photo error: ${err.message}`);
+  } catch (e) {
+    ctx.reply("❌ Photo download fail: " + e.message);
   }
 });
 
-// ── Number handler ──────────────────────────────────────────────────
-bot.on("text", async (ctx) => {
-  const userId = String(ctx.from.id);
-  const state  = pending.get(userId);
-  if (!state || state.stage !== "waiting_number") return;
+bot.on("text", async ctx => {
+  const uid   = String(ctx.from.id);
+  const state = pending.get(uid);
+  if (!state || state.stage !== "number") return;
 
-  const phone = ctx.message.text.trim().replace(/[^0-9]/g, "");
-  if (phone.length < 7 || phone.length > 15) {
-    return ctx.replyWithMarkdown(`❌ Invalid. Example: \`917288837763\``);
-  }
+  const phone = ctx.message.text.replace(/\D/g, "");
+  if (phone.length < 7 || phone.length > 15)
+    return ctx.replyWithMarkdown("❌ Invalid. Example: `917288837763`");
 
-  const { photoPath } = state;
-  pending.delete(userId);
-
+  pending.delete(uid);
   await ctx.replyWithMarkdown(
-    `⏳ *Processing...*\n📱 \`+${phone}\`\n🔄 Pair code generate ho raha hai...`
+    `⏳ *Processing...*\n📱 \`+${phone}\`\n🔄 Pair code aa raha hai...`
   );
 
-  // Non-blocking
-  runPairFlow(userId, phone, photoPath, ctx).catch((err) => {
-    ctx.reply(`❌ Error: ${err.message}`);
-  });
+  startSession(uid, phone, state.photoPath, ctx);
 });
 
-// ┌──────────────────────────────────────────────────────────────────┐
-// │                    MAIN PAIR FLOW                                │
-// └──────────────────────────────────────────────────────────────────┘
-async function runPairFlow(userId, phone, photoPath, ctx) {
-  // Always fresh session dir
-  const sessionDir = path.join(CONFIG.SESSIONS_DIR, `uid_${userId}`);
-  if (fs.existsSync(sessionDir)) fs.rmSync(sessionDir, { recursive: true, force: true });
-  fs.mkdirSync(sessionDir, { recursive: true });
+// ══════════════════════════════════════════════
+//  CORE: startSession
+// ══════════════════════════════════════════════
+async function startSession(uid, phone, photoPath, ctx) {
+  // Fresh session every time
+  const dir = path.join(SESSIONS_DIR, uid);
+  if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(dir, { recursive: true });
 
-  const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+  const { state, saveCreds } = await useMultiFileAuthState(dir);
   const logger = pino({ level: "silent" });
 
-  // ── WA version — fetch fresh, fallback to last known working ──
-  let WA_VERSION = [2, 3000, 1021022925];
+  // Fetch latest WA version
+  let version = [2, 3000, 1021022925];
   try {
-    const fetched = await fetchLatestBaileysVersion();
-    if (fetched?.version) WA_VERSION = fetched.version;
-    console.log(`[${userId}] WA version:`, WA_VERSION.join("."));
-  } catch (_) {
-    console.log(`[${userId}] Using fallback WA version`);
-  }
+    const v = await fetchLatestBaileysVersion();
+    if (v?.version) version = v.version;
+  } catch (_) {}
+  console.log(`[${uid}] version: ${version.join(".")}`);
 
   const sock = makeWASocket({
-    version            : WA_VERSION,
+    version,
     logger,
-    printQRInTerminal  : false,
-    auth               : {
+    auth: {
       creds : state.creds,
       keys  : makeCacheableSignalKeyStore(state.keys, logger),
     },
-    browser            : ["Windows", "Chrome", "121.0.6167.160"],
-    syncFullHistory    : false,
-    markOnlineOnConnect: false,
-    generateHighQualityLinkPreview: false,
-    connectTimeoutMs   : 60_000,
-    keepAliveIntervalMs: 15_000,
+    browser             : ["Windows", "Chrome", "121.0.6167.160"],
+    printQRInTerminal   : false,
+    syncFullHistory     : false,
+    markOnlineOnConnect : false,
+    connectTimeoutMs    : 60_000,
+    keepAliveIntervalMs : 25_000,
   });
 
-  sessions.set(userId, { sock, number: phone });
+  active.set(uid, sock);
   sock.ev.on("creds.update", saveCreds);
 
-  // ── Promise that resolves when "open", rejects on unrecoverable close ──
-  const connectionPromise = new Promise((resolve, reject) => {
-    sock.ev.on("connection.update", (update) => {
-      const { connection, lastDisconnect, qr } = update;
-      console.log(`[${userId}] connection:`, connection ?? "-", "| code:", lastDisconnect?.error?.output?.statusCode ?? "-");
+  let pairRequested = false;
+  let pairDone      = false;
 
-      if (connection === "open") {
-        resolve(sock);
-      }
+  sock.ev.on("connection.update", async update => {
+    const { connection, lastDisconnect } = update;
+    const errCode = lastDisconnect?.error?.output?.statusCode;
+    console.log(`[${uid}] ${connection ?? "?"} | code: ${errCode ?? "-"}`);
 
-      if (connection === "close") {
-        const code = lastDisconnect?.error?.output?.statusCode;
-        console.log(`[${userId}] close code: ${code}`);
+    // ── Step 1: Request pair code when connecting ─────────────────
+    if (connection === "connecting" && !pairRequested) {
+      pairRequested = true;
 
-        // 515 = stream restart, normal during pairing — ignore
-        if (code === 515) return;
-
-        // 405 = WA rejected the pairing method on this attempt
-        // Baileys will auto-reconnect via its own retry — just wait
-        if (code === 405) {
-          console.log(`[${userId}] 405 — waiting for Baileys reconnect...`);
-          return;
-        }
-
-        // 428 = connection replaced, 401/403 = auth fail — unrecoverable
-        reject(new Error(`Connection closed (code: ${code ?? "unknown"})`));
-      }
-    });
-  });
-
-  // ── Request pair code ──────────────────────────────────────────
-  // Wait for socket WS to connect (readyState 1 = OPEN)
-  await waitForWS(sock, 20_000);
-
-  let pairCode;
-  for (let i = 1; i <= 3; i++) {
-    try {
-      pairCode = await sock.requestPairingCode(phone);
-      break;
-    } catch (err) {
-      console.error(`[${userId}] Pair code attempt ${i}: ${err.message}`);
-      if (i === 3) throw new Error(`Pair code generate nahi hua: ${err.message}`);
+      // Give noise handshake 4 seconds
       await sleep(4000);
+
+      try {
+        const raw  = await sock.requestPairingCode(phone);
+        const code = raw.match(/.{1,4}/g).join("-");
+        console.log(`[${uid}] Pair code: ${code}`);
+
+        await ctx.replyWithMarkdown(
+          `🔑 *Pair Code:*\n\n` +
+          `\`${code}\`\n\n` +
+          `*WhatsApp me karo:*\n` +
+          `1️⃣ Settings → Linked Devices\n` +
+          `2️⃣ Link a Device\n` +
+          `3️⃣ Link with phone number instead\n` +
+          `4️⃣ Ye code enter karo\n\n` +
+          `⏰ _60 sec me expire hoga_\n` +
+          `⏳ _Link hone ka wait kar raha hai..._`
+        );
+      } catch (e) {
+        console.error(`[${uid}] Pair code error: ${e.message}`);
+        // 515 will close + reopen — reset so we retry
+        pairRequested = false;
+      }
     }
-  }
 
-  const formattedCode = pairCode.match(/.{1,4}/g).join("-");
+    // ── Step 2: Connected! ────────────────────────────────────────
+    if (connection === "open" && !pairDone) {
+      pairDone = true;
+      await saveCreds();
+      console.log(`[${uid}] Connected!`);
+      await runPostConnect(uid, phone, photoPath, sock, ctx);
+    }
+
+    // ── Disconnected ──────────────────────────────────────────────
+    if (connection === "close") {
+      const fatal = [401, 403, 408].includes(errCode);
+
+      if (errCode === 515) {
+        // Stream restart during pairing — reset and let Baileys reconnect
+        pairRequested = false;
+        return;
+      }
+
+      if (fatal || pairDone) {
+        // Cleanup after success or fatal error
+        active.delete(uid);
+        return;
+      }
+
+      // Non-fatal unexpected close — reset pair flag for retry
+      pairRequested = false;
+    }
+  });
+}
+
+// ══════════════════════════════════════════════
+//  POST-CONNECT ACTIONS
+// ══════════════════════════════════════════════
+async function runPostConnect(uid, phone, photoPath, sock, ctx) {
+  const self = jidNormalizedUser(sock.user.id);
+
   await ctx.replyWithMarkdown(
-    `🔑 *Pair Code Ready!*\n\n` +
-    `┌──────────────────────┐\n` +
-    `│     \`${formattedCode}\`     │\n` +
-    `└──────────────────────┘\n\n` +
-    `*WhatsApp me ye steps karo:*\n\n` +
-    `1️⃣ WhatsApp kholo\n` +
-    `2️⃣ *Settings → Linked Devices*\n` +
-    `3️⃣ *Link a Device* tap karo\n` +
-    `4️⃣ *Link with phone number instead* choose karo\n` +
-    `5️⃣ Upar ka code enter karo\n\n` +
-    `⏰ _Code 60 sec me expire hoga!_\n` +
-    `⏳ _Link hone ka wait kar raha hai..._`
-  );
-
-  // ── Wait for user to enter code in WhatsApp (up to 3 minutes) ──
-  let connectedSock;
-  try {
-    connectedSock = await Promise.race([
-      connectionPromise,
-      sleep(180_000).then(() => { throw new Error("Timeout — 3 minutes me link nahi hua. /pair se dobara try karo."); }),
-    ]);
-  } catch (err) {
-    await ctx.replyWithMarkdown(`❌ *${err.message}*`);
-    cleanupSession(userId);
-    cleanupSessionDir(userId);
-    return;
-  }
-
-  // ── CONNECTED! ─────────────────────────────────────────────────
-  await saveCreds();
-  await ctx.replyWithMarkdown(
-    `✅ *WhatsApp Pair Successful!*\n\n` +
-    `📱 \`+${phone}\` connected!\n` +
-    `🖼️ DP change ho rahi hai...`
+    `✅ *WhatsApp Pair Successful!*\n📱 \`+${phone}\`\n\n🖼️ DP change ho rahi hai...`
   );
   await sleep(2000);
 
   // ── A. Change DP ───────────────────────────────────────────────
   try {
-    const selfJid   = jidNormalizedUser(connectedSock.user.id);
-    const imgBuffer = fs.readFileSync(photoPath);
-    await connectedSock.updateProfilePicture(selfJid, imgBuffer);
-
-    await sendWAInbox(connectedSock, phone,
-      `✅ *Pair Successful!*\n\n` +
-      `Tumhara WhatsApp NeuroBot se link ho gaya! 🎉\n\n` +
-      `🖼️ *DP Change Ho Gayi!*\n` +
-      `Tumhara naya profile picture set ho gaya.\n\n` +
+    const img = fs.readFileSync(photoPath);
+    await sock.updateProfilePicture(self, img);
+    await waMsg(sock, phone,
+      `✅ *Pair Ho Gaya!*\n\n` +
+      `NeuroBot se link ho gaye! 🎉\n` +
+      `🖼️ DP change ho gayi.\n` +
       `📱 +${phone}\n` +
       `⏳ Group join ho raha hai...`
     );
     await ctx.replyWithMarkdown(
-      `🖼️ *DP Change Ho Gayi!*\n\n` +
-      `✅ Profile picture set ho gaya.\n` +
-      `📨 WA inbox me confirm kiya.\n\n` +
-      `🎭 Sticker bana raha hai...`
+      `🖼️ *DP Change Ho Gayi!*\n✅ Profile picture set.\n\n🎭 Sticker ban raha hai...`
     );
-  } catch (err) {
-    console.error("[DP Error]", err.message);
-    await ctx.replyWithMarkdown(`⚠️ DP change fail: \`${err.message}\`\nAage jaari hai...`);
+  } catch (e) {
+    console.error("[DP]", e.message);
+    await ctx.replyWithMarkdown(`⚠️ DP fail: \`${e.message}\`\nAage jaari...`);
   }
 
   await sleep(1500);
 
-  // ── B. Send Sticker ────────────────────────────────────────────
+  // ── B. Sticker ────────────────────────────────────────────────
   try {
-    const imgBuffer     = fs.readFileSync(photoPath);
-    const sticker       = new Sticker(imgBuffer, {
-      pack   : CONFIG.STICKER_PACKNAME,
-      author : CONFIG.STICKER_AUTHOR,
+    const img     = fs.readFileSync(photoPath);
+    const sticker = new Sticker(img, {
+      pack   : STICKER_PACK,
+      author : STICKER_AUTHOR,
       type   : StickerTypes.FULL,
       quality: 50,
     });
-    const stickerBuffer = await sticker.toBuffer();
-    await connectedSock.sendMessage(`${phone}@s.whatsapp.net`, {
-      sticker: stickerBuffer,
+    await sock.sendMessage(`${phone}@s.whatsapp.net`, {
+      sticker: await sticker.toBuffer(),
     });
     await ctx.replyWithMarkdown(
-      `🎭 *Sticker Bhej Diya!*\n` +
-      `📦 Pack: *${CONFIG.STICKER_PACKNAME}* | ✍️ Author: *${CONFIG.STICKER_AUTHOR}*\n\n` +
-      `📢 Newsletter join ho raha hai...`
+      `🎭 *Sticker Bheja!*\n📦 *${STICKER_PACK}* | ✍️ *${STICKER_AUTHOR}*\n\n📢 Newsletter...`
     );
-  } catch (err) {
-    console.error("[Sticker Error]", err.message);
+  } catch (e) {
+    console.error("[Sticker]", e.message);
   }
 
   await sleep(1500);
 
-  // ── C. Newsletter follow ───────────────────────────────────────
+  // ── C. Newsletter ─────────────────────────────────────────────
   try {
-    await connectedSock.newsletterFollow(CONFIG.NEWSLETTER_JID);
-    await ctx.replyWithMarkdown(
-      `📢 *Newsletter Join Ho Gaya!*\n\n🔗 Group join ho raha hai...`
-    );
-  } catch (err) {
-    console.error("[Newsletter Error]", err.message);
+    await sock.newsletterFollow(NEWSLETTER_JID);
+    await ctx.replyWithMarkdown(`📢 *Newsletter Joined!*\n\n🔗 Group join ho raha hai...`);
+  } catch (e) {
+    console.error("[Newsletter]", e.message);
   }
 
   await sleep(1500);
 
-  // ── D. Join Group ──────────────────────────────────────────────
-  await ctx.replyWithMarkdown(`🔗 *Group Join Ho Raha Hai...*\n⏳ Almost done!`);
-  await sendWAInbox(connectedSock, phone, `🔗 Group join ho raha hai... ek second.`);
+  // ── D. Group Join ─────────────────────────────────────────────
+  await ctx.replyWithMarkdown(`🔗 *Group Join Ho Raha Hai...*`);
+  await waMsg(sock, phone, `🔗 Group join ho raha hai...`);
   await sleep(1000);
 
-  const joinResult = await joinWAGroup(connectedSock, CONFIG.GROUP_INVITE_LINK);
+  const code  = GROUP_INVITE_LINK.split("chat.whatsapp.com/")[1]?.trim();
+  let grpName = "WhatsApp Group";
+  let joined  = false;
+  try {
+    const info = await sock.groupGetInviteInfo(code);
+    grpName = info?.subject || grpName;
+    await sock.groupAcceptInvite(code);
+    joined = true;
+  } catch (e) {
+    console.error("[Group]", e.message);
+  }
 
-  if (joinResult.success) {
-    await sendWAInbox(connectedSock, phone,
-      `🎉 *Sab Kuch Ho Gaya!*\n\n` +
-      `✅ Pair         → Done\n` +
-      `✅ DP Change    → Done\n` +
-      `✅ Newsletter   → Joined\n` +
-      `✅ Group        → Joined\n\n` +
-      `👥 ${joinResult.groupName}\n` +
-      `📱 +${phone}\n\n` +
-      `🤖 Powered by NeuroBot`
+  if (joined) {
+    await waMsg(sock, phone,
+      `🎉 *Sab Ho Gaya!*\n\n` +
+      `✅ Pair       → Done\n` +
+      `✅ DP Change  → Done\n` +
+      `✅ Newsletter → Done\n` +
+      `✅ Group      → Joined\n\n` +
+      `👥 ${grpName} | 📱 +${phone}\n🤖 NeuroBot`
     );
     await ctx.replyWithMarkdown(
-      `🎉 *Sab Kuch Complete Ho Gaya!*\n\n` +
-      `━━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `🎉 *Sab Complete!*\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
       `✅  Pair          → Done\n` +
       `✅  DP Change     → Done\n` +
       `✅  Sticker       → Sent\n` +
       `✅  Newsletter    → Joined\n` +
       `✅  Group         → Joined\n` +
-      `✅  Linked Device → Auto Logout\n` +
-      `━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-      `📱 \`+${phone}\`\n` +
-      `👥 *${joinResult.groupName || "WhatsApp Group"}*\n\n` +
-      `📨 _WA inbox me bhi confirmation bheja gaya!_\n\n` +
-      `🤖 *NeuroBot — Done!*`
+      `✅  Linked Device → Logout\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `📱 \`+${phone}\` | 👥 *${grpName}*\n\n` +
+      `📨 _WA inbox me bhi confirm kiya!_\n🤖 *NeuroBot — Done!*`
     );
   } else {
-    await sendWAInbox(connectedSock, phone,
-      `⚠️ Group join nahi ho saka.\nReason: ${joinResult.reason}`
-    );
-    await ctx.replyWithMarkdown(
-      `⚠️ *Group Join Fail*\n\`${joinResult.reason}\`\n\n` +
-      `✅ Pair, DP, Sticker, Newsletter — sab ho gaya.`
-    );
+    await ctx.replyWithMarkdown(`⚠️ Group join fail.\n✅ Baaki sab ho gaya.`);
   }
 
-  // ── E. Auto logout + cleanup ───────────────────────────────────
   await sleep(3000);
+
+  // ── E. Logout + cleanup ───────────────────────────────────────
+  try { await sock.logout(); } catch (_) {
+    try { sock.end(); } catch (_) {}
+  }
+  active.delete(uid);
+
+  // Delete session dir — user can /pair fresh any time
   try {
-    await connectedSock.logout();
-    console.log(`[${userId}] Auto logout done.`);
-  } catch (err) {
-    console.error("[Logout Error]", err.message);
-    try { connectedSock.end(); } catch (_) {}
-  }
-
-  // Session dir delete — user can pair again fresh next time
-  cleanupSession(userId);
-  cleanupSessionDir(userId);
-  try { if (fs.existsSync(photoPath)) fs.unlinkSync(photoPath); } catch (_) {}
-  console.log(`[${userId}] Session + files cleaned up. Ready for next /pair.`);
-}
-
-// ┌──────────────────────────────────────────────────────────────────┐
-// │                       HELPERS                                    │
-// └──────────────────────────────────────────────────────────────────┘
-
-// Wait for WebSocket to reach OPEN state
-async function waitForWS(sock, timeoutMs = 20000) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const ws = sock.ws;
-    if (ws && ws.readyState === 1) return; // 1 = OPEN
-    await sleep(300);
-  }
-  // Proceed anyway after timeout — might still work
-  console.log("WS wait timeout — proceeding anyway");
-}
-
-function cleanupSession(userId) {
-  const entry = sessions.get(userId);
-  if (entry) {
-    try { entry.sock?.end?.(); } catch (_) {}
-    sessions.delete(userId);
-  }
-}
-
-function cleanupSessionDir(userId) {
-  try {
-    const dir = path.join(CONFIG.SESSIONS_DIR, `uid_${userId}`);
+    const dir = path.join(SESSIONS_DIR, uid);
     if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
   } catch (_) {}
+
+  // Delete temp photo
+  try { if (fs.existsSync(photoPath)) fs.unlinkSync(photoPath); } catch (_) {}
+
+  console.log(`[${uid}] All done. Session cleaned.`);
 }
 
-async function sendWAInbox(sock, phone, text) {
-  try {
-    await sock.sendMessage(`${phone}@s.whatsapp.net`, { text });
-  } catch (err) {
-    console.error("[WA Inbox Error]", err.message);
-  }
+// ══════════════════════════════════════════════
+//  HELPERS
+// ══════════════════════════════════════════════
+async function waMsg(sock, phone, text) {
+  try { await sock.sendMessage(`${phone}@s.whatsapp.net`, { text }); }
+  catch (e) { console.error("[waMsg]", e.message); }
 }
 
-async function joinWAGroup(sock, inviteLink) {
-  try {
-    const code = inviteLink.split("chat.whatsapp.com/")[1]?.trim();
-    if (!code) return { success: false, reason: "Invalid link" };
-    let groupName = "WhatsApp Group";
-    try {
-      const info = await sock.groupGetInviteInfo(code);
-      groupName  = info?.subject || groupName;
-    } catch (_) {}
-    await sock.groupAcceptInvite(code);
-    return { success: true, groupName };
-  } catch (err) {
-    return { success: false, reason: err.message };
-  }
+function killSession(uid) {
+  const sock = active.get(uid);
+  if (sock) { try { sock.end(); } catch (_) {} active.delete(uid); }
 }
 
-function downloadFile(url, dest) {
-  return new Promise((resolve, reject) => {
+function dlFile(url, dest) {
+  return new Promise((res, rej) => {
     const proto = url.startsWith("https") ? https : http;
-    const file  = fs.createWriteStream(dest);
-    proto.get(url, (res) => {
-      if (res.statusCode === 301 || res.statusCode === 302) {
-        file.close();
-        return downloadFile(res.headers.location, dest).then(resolve).catch(reject);
-      }
-      res.pipe(file);
-      file.on("finish", () => { file.close(); resolve(); });
-    }).on("error", (err) => {
-      fs.unlink(dest, () => {});
-      reject(err);
-    });
+    const f = fs.createWriteStream(dest);
+    proto.get(url, r => {
+      if (r.statusCode === 301 || r.statusCode === 302)
+        return dlFile(r.headers.location, dest).then(res).catch(rej);
+      r.pipe(f);
+      f.on("finish", () => { f.close(); res(); });
+    }).on("error", e => { fs.unlink(dest, ()=>{}); rej(e); });
   });
 }
 
-function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-// ┌──────────────────────────────────────────────────────────────────┐
-// │                        LAUNCH                                    │
-// └──────────────────────────────────────────────────────────────────┘
+// ══════════════════════════════════════════════
+//  LAUNCH
+// ══════════════════════════════════════════════
 bot.launch({ dropPendingUpdates: true });
 console.log("🤖 NeuroBot running...");
-console.log(`📁 Sessions : ${CONFIG.SESSIONS_DIR}`);
-console.log(`📁 Temp     : ${CONFIG.TEMP_DIR}`);
+console.log("Sessions :", SESSIONS_DIR);
+console.log("Temp     :", TEMP_DIR);
 
-process.once("SIGINT",  () => { bot.stop("SIGINT");  process.exit(0); });
-process.once("SIGTERM", () => { bot.stop("SIGTERM"); process.exit(0); });
+process.once("SIGINT",  () => { bot.stop(); process.exit(0); });
+process.once("SIGTERM", () => { bot.stop(); process.exit(0); });
