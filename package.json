@@ -1,0 +1,21 @@
+{
+  "name": "whatsapp-pair-telegram-bot",
+  "version": "2.0.0",
+  "description": "Telegram bot — WhatsApp pair via Baileys 7.x | WA Inbox + Telegram messages | Multi-session",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "7.0.0-rc.9",
+    "telegraf": "^4.16.3",
+    "pino": "^8.21.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
