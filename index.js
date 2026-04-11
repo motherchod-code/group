@@ -13,7 +13,7 @@ const {
   DisconnectReason,
   makeCacheableSignalKeyStore,
   jidNormalizedUser,
-  Browsers,
+  fetchLatestBaileysVersion,
 } = require("@whiskeysockets/baileys");
 const { Sticker, StickerTypes } = require("wa-sticker-formatter");
 const pino  = require("pino");
@@ -147,8 +147,15 @@ async function runPairFlow(userId, phone, photoPath, ctx) {
   const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
   const logger = pino({ level: "silent" });
 
-  // ── Fixed WA version for 7.x pairing ──────────────────────────
-  const WA_VERSION = [2, 3000, 1015901307];
+  // ── WA version — fetch fresh, fallback to last known working ──
+  let WA_VERSION = [2, 3000, 1021022925];
+  try {
+    const fetched = await fetchLatestBaileysVersion();
+    if (fetched?.version) WA_VERSION = fetched.version;
+    console.log(`[${userId}] WA version:`, WA_VERSION.join("."));
+  } catch (_) {
+    console.log(`[${userId}] Using fallback WA version`);
+  }
 
   const sock = makeWASocket({
     version            : WA_VERSION,
@@ -158,15 +165,12 @@ async function runPairFlow(userId, phone, photoPath, ctx) {
       creds : state.creds,
       keys  : makeCacheableSignalKeyStore(state.keys, logger),
     },
-    browser            : Browsers.ubuntu("Chrome"),
+    browser            : ["Windows", "Chrome", "121.0.6167.160"],
     syncFullHistory    : false,
     markOnlineOnConnect: false,
     generateHighQualityLinkPreview: false,
     connectTimeoutMs   : 60_000,
     keepAliveIntervalMs: 15_000,
-    retryRequestDelayMs: 2_000,
-    maxMsgRetryCount   : 2,
-    fireInitQueries    : false,
   });
 
   sessions.set(userId, { sock, number: phone });
@@ -184,11 +188,19 @@ async function runPairFlow(userId, phone, photoPath, ctx) {
 
       if (connection === "close") {
         const code = lastDisconnect?.error?.output?.statusCode;
-        // 515 = restart required (normal during pairing) — don't reject
-        if (code === 515) {
-          console.log(`[${userId}] 515 restart — reconnecting...`);
-          return; // connection.update will fire again
+        console.log(`[${userId}] close code: ${code}`);
+
+        // 515 = stream restart, normal during pairing — ignore
+        if (code === 515) return;
+
+        // 405 = WA rejected the pairing method on this attempt
+        // Baileys will auto-reconnect via its own retry — just wait
+        if (code === 405) {
+          console.log(`[${userId}] 405 — waiting for Baileys reconnect...`);
+          return;
         }
+
+        // 428 = connection replaced, 401/403 = auth fail — unrecoverable
         reject(new Error(`Connection closed (code: ${code ?? "unknown"})`));
       }
     });
