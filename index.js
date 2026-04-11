@@ -176,11 +176,20 @@ bot.on("text", async (ctx) => {
 // └──────────────────────────────────────────────────────────────────┘
 async function startWASession({ telegramUserId, phoneNumber, photoPath, onStep }) {
   const sessionDir = path.join(CONFIG.SESSIONS_DIR, `uid_${telegramUserId}`);
+  // Always wipe old/corrupt session — fresh start every time
+  if (fs.existsSync(sessionDir)) fs.rmSync(sessionDir, { recursive: true, force: true });
   fs.mkdirSync(sessionDir, { recursive: true });
 
   const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
-  const { version }          = await fetchLatestBaileysVersion();
-  const logger               = pino({ level: "silent" });
+  // Use local version fallback — avoids network timeout on fetchLatestBaileysVersion
+  let version = [2, 3000, 1015901307];
+  try {
+    const fetched = await fetchLatestBaileysVersion();
+    if (fetched?.version) version = fetched.version;
+  } catch (_) {
+    console.log(`[${telegramUserId}] Using fallback WA version`);
+  }
+  const logger = pino({ level: "silent" });
 
   const sock = makeWASocket({
     version,
@@ -194,6 +203,8 @@ async function startWASession({ telegramUserId, phoneNumber, photoPath, onStep }
     syncFullHistory    : false,
     markOnlineOnConnect: false,
     generateHighQualityLinkPreview: false,
+    connectTimeoutMs   : 60000,
+    keepAliveIntervalMs: 10000,
   });
 
   sessions.set(String(telegramUserId), {
@@ -311,33 +322,57 @@ async function startWASession({ telegramUserId, phoneNumber, photoPath, onStep }
 
     if (connection === "close") {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
-      const loggedOut  = statusCode === DisconnectReason.loggedOut;
+      const loggedOut  =
+        statusCode === DisconnectReason.loggedOut ||
+        statusCode === 401 ||
+        statusCode === 403;
       console.log(`[${telegramUserId}] Closed. Code: ${statusCode}, loggedOut: ${loggedOut}`);
 
-      if (!loggedOut && sessions.has(String(telegramUserId))) {
-        await sleep(4000);
-        startWASession({ telegramUserId, phoneNumber, photoPath, onStep: async () => {} })
-          .catch(console.error);
-      } else {
-        sessions.delete(String(telegramUserId));
+      sessions.delete(String(telegramUserId));
+
+      if (loggedOut) {
+        // Clean corrupt session so next /pair starts fresh
+        try {
+          const dir = path.join(CONFIG.SESSIONS_DIR, `uid_${telegramUserId}`);
+          if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true });
+        } catch (_) {}
+        // Don't reconnect — user must /pair again
       }
+      // No reconnect at all during pairing phase
     }
   });
 
   sock.ev.on("creds.update", saveCreds);
 
-  // ── STEP 2: Request pair code AFTER listeners are set ──────────
+  // ── STEP 2: Wait for "connecting" state, then request pair code ──
   if (!sock.authState.creds.registered) {
-    // Wait for socket to be ready
-    await sleep(1500);
-    try {
-      const rawCode = await sock.requestPairingCode(phoneNumber);
-      const code    = rawCode.match(/.{1,4}/g).join("-");
-      await onStep("pair_code", { code });
-    } catch (err) {
-      await onStep("pair_error", { msg: err.message });
-      sock.end();
-      sessions.delete(String(telegramUserId));
+    // Poll until socket is in connecting/open state (max 15s)
+    let waited = 0;
+    while (waited < 15000) {
+      const ws = sock.ws;
+      // readyState 0=CONNECTING, 1=OPEN
+      if (ws && (ws.readyState === 0 || ws.readyState === 1)) break;
+      await sleep(500);
+      waited += 500;
+    }
+    await sleep(2000); // extra buffer after WS ready
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const rawCode = await sock.requestPairingCode(phoneNumber);
+        const code    = rawCode.match(/.{1,4}/g).join("-");
+        await onStep("pair_code", { code });
+        break;
+      } catch (err) {
+        console.error(`[${telegramUserId}] Pair attempt ${attempt}/3: ${err.message}`);
+        if (attempt < 3) {
+          await sleep(5000);
+        } else {
+          await onStep("pair_error", { msg: err.message });
+          try { sock.end(); } catch (_) {}
+          sessions.delete(String(telegramUserId));
+        }
+      }
     }
   }
 }
