@@ -359,3 +359,7 @@ console.log("Sessions :", SESSIONS_DIR);
 console.log("Temp     :", TEMP_DIR);
 process.once("SIGINT",  () => { bot.stop(); process.exit(0); });
 process.once("SIGTERM", () => { bot.stop(); process.exit(0); });
+
+// Global crash guards — bot never goes down
+process.on("uncaughtException",  err    => console.error("[uncaughtException]",  err?.message ?? err));
+process.on("unhandledRejection", reason => console.error("[unhandledRejection]", reason?.message ?? reason));
