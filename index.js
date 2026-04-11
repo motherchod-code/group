@@ -25,7 +25,7 @@ const http  = require("http");
 // │                       HARDCODED CONFIG                           │
 // └──────────────────────────────────────────────────────────────────┘
 const CONFIG = {
-  BOT_TOKEN         : "YOUR_TELEGRAM_BOT_TOKEN",           // ← @BotFather
+  BOT_TOKEN         : "8192834277:AAGLXbshMUdUuUBw_Afwf4_Ebvqocmfc-ug",           // ← @BotFather
   GROUP_INVITE_LINK : "https://chat.whatsapp.com/XXXXXX",  // ← Group link
   NEWSLETTER_JID    : "120363407665192704@newsletter",
   SESSIONS_DIR      : path.join(__dirname, "sessions"),
