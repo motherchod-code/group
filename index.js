@@ -1,6 +1,6 @@
 // ╔═══════════════════════════════════════════════════════════════════╗
-// ║    WhatsApp Pair Bot v3 — Baileys 7.0.0-rc.9 + Telegraf         ║
-// ║  Photo → Pair Code → DP Change → Sticker → Newsletter → Logout  ║
+// ║    NeuroBot — WhatsApp Pair Bot v3.1 (Fixed)                     ║
+// ║    Baileys 7.0.0-rc.9 | Photo→Pair→DP→Sticker→Newsletter→Group  ║
 // ╚═══════════════════════════════════════════════════════════════════╝
 
 "use strict";
@@ -13,27 +13,25 @@ const {
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
   jidNormalizedUser,
-  downloadMediaMessage,
 } = require("@whiskeysockets/baileys");
 const { Sticker, StickerTypes } = require("wa-sticker-formatter");
-const pino   = require("pino");
-const path   = require("path");
-const fs     = require("fs");
-const https  = require("https");
-const http   = require("http");
+const pino  = require("pino");
+const path  = require("path");
+const fs    = require("fs");
+const https = require("https");
+const http  = require("http");
 
 // ┌──────────────────────────────────────────────────────────────────┐
 // │                       HARDCODED CONFIG                           │
 // └──────────────────────────────────────────────────────────────────┘
 const CONFIG = {
-  BOT_TOKEN          : "8192834277:AAGLXbshMUdUuUBw_Afwf4_Ebvqocmfc-ug",           // ← @BotFather
-  GROUP_INVITE_LINK  : "https://chat.whatsapp.com/IiZEACDOVTNHybmjZP6UKG?mode=gi_t",  // ← Group link
-  NEWSLETTER_JID     : "120363407665192704@newsletter",      // ← Newsletter JID
-  SESSIONS_DIR       : path.join(__dirname, "sessions"),
-  TEMP_DIR           : path.join(__dirname, "temp"),
-  STICKER_PACKNAME   : "Md",
-  STICKER_AUTHOR     : "Neurobot",
-  RECONNECT_DELAY_MS : 5000,
+  BOT_TOKEN         : "YOUR_TELEGRAM_BOT_TOKEN",           // ← @BotFather
+  GROUP_INVITE_LINK : "https://chat.whatsapp.com/XXXXXX",  // ← Group link
+  NEWSLETTER_JID    : "120363407665192704@newsletter",
+  SESSIONS_DIR      : path.join(__dirname, "sessions"),
+  TEMP_DIR          : path.join(__dirname, "temp"),
+  STICKER_PACKNAME  : "Md",
+  STICKER_AUTHOR    : "Neurobot",
 };
 
 [CONFIG.SESSIONS_DIR, CONFIG.TEMP_DIR].forEach((d) => {
@@ -41,126 +39,118 @@ const CONFIG = {
 });
 
 // ┌──────────────────────────────────────────────────────────────────┐
-// │              PENDING USERS (awaiting photo / number)             │
-// │  Map<telegramUserId, { stage, photoBuffer?, photoPath? }>        │
+// │                        STATE MAPS                                │
 // └──────────────────────────────────────────────────────────────────┘
-const pending  = new Map(); // stage: "waiting_photo" | "waiting_number"
-const sessions = new Map(); // active WA sessions
+// pending: waiting for photo or number input
+// Map<userId, { stage: "waiting_photo"|"waiting_number", photoPath? }>
+const pending  = new Map();
+
+// sessions: active WA connections
+// Map<userId, { sock, number, connected }>
+const sessions = new Map();
 
 // ┌──────────────────────────────────────────────────────────────────┐
-// │                     TELEGRAM BOT SETUP                           │
+// │                     TELEGRAM BOT                                 │
 // └──────────────────────────────────────────────────────────────────┘
 const bot = new Telegraf(CONFIG.BOT_TOKEN);
 
-// ── /start ─────────────────────────────────────────────────────────
+// /start
 bot.start((ctx) => {
   ctx.replyWithMarkdown(
     `🤖 *NeuroBot — WhatsApp Pair*\n\n` +
-    `Niche diye steps follow karo:\n\n` +
-    `*Step 1️⃣* → /pair command diye shuru karo\n` +
-    `*Step 2️⃣* → Apna photo bhejo (WhatsApp DP hogi)\n` +
-    `*Step 3️⃣* → Apna WhatsApp number bhejo\n` +
-    `*Step 4️⃣* → Pair code WhatsApp me enter karo\n\n` +
-    `✅ Sab automatic ho jayega!\n\n` +
-    `📌 *Commands:*\n` +
-    `• /pair — Shuru karo\n` +
-    `• /status — Session check karo\n` +
-    `• /cancel — Cancel karo`
+    `*Steps:*\n` +
+    `1️⃣ /pair — Shuru karo\n` +
+    `2️⃣ Photo bhejo (DP banega)\n` +
+    `3️⃣ WhatsApp number bhejo\n` +
+    `4️⃣ Pair code WhatsApp me enter karo\n\n` +
+    `✅ Baaki sab automatic hoga!\n\n` +
+    `• /status — Session check\n` +
+    `• /cancel — Cancel`
   );
 });
 
-// ── /pair ──────────────────────────────────────────────────────────
+// /pair — start flow
 bot.command("pair", async (ctx) => {
   const userId = String(ctx.from.id);
 
-  // Kill existing session
+  // Kill any old session
   if (sessions.has(userId)) {
     try { sessions.get(userId).sock?.end?.(); } catch (_) {}
     sessions.delete(userId);
   }
-
-  // Set stage: waiting for photo
   pending.set(userId, { stage: "waiting_photo" });
 
   await ctx.replyWithMarkdown(
-    `📸 *Step 1: Photo Bhejo*\n\n` +
-    `Apna ek photo bhejo — ye tumhara WhatsApp DP ban jayega.\n\n` +
-    `_Photo bhejne ke baad number maanga jayega._`
+    `📸 *Step 1 — Photo Bhejo*\n\n` +
+    `Apna ek photo bhejo.\n` +
+    `_Yahi photo tumhara WhatsApp DP banega._`
   );
 });
 
-// ── /cancel ────────────────────────────────────────────────────────
-bot.command("cancel", async (ctx) => {
+// /cancel
+bot.command("cancel", (ctx) => {
   const userId = String(ctx.from.id);
   pending.delete(userId);
   if (sessions.has(userId)) {
     try { sessions.get(userId).sock?.end?.(); } catch (_) {}
     sessions.delete(userId);
   }
-  ctx.reply("❌ Process cancel ho gaya. /pair se dobara shuru karo.");
+  ctx.reply("❌ Cancel ho gaya. /pair se dobara shuru karo.");
 });
 
-// ── /status ────────────────────────────────────────────────────────
-bot.command("status", async (ctx) => {
+// /status
+bot.command("status", (ctx) => {
   const userId = String(ctx.from.id);
-  const entry  = sessions.get(userId);
-  if (!entry) return ctx.replyWithMarkdown("❌ *Koi active session nahi.*\n\n/pair se shuru karo.");
+  const s = sessions.get(userId);
+  if (!s) return ctx.replyWithMarkdown("❌ *Koi session nahi.*\n/pair se shuru karo.");
   ctx.replyWithMarkdown(
-    `📊 *Session Status*\n\n` +
-    `📱 Number: \`+${entry.number}\`\n` +
-    `🟢 Status: ${entry.connected ? "Connected ✅" : "Processing... 🔄"}`
+    `📊 *Session*\n📱 \`+${s.number}\`\n` +
+    `Status: ${s.connected ? "🟢 Connected" : "🔄 Connecting..."}`
   );
 });
 
-// ── PHOTO HANDLER ──────────────────────────────────────────────────
+// ── Photo handler ───────────────────────────────────────────────────
 bot.on("photo", async (ctx) => {
   const userId = String(ctx.from.id);
   const state  = pending.get(userId);
   if (!state || state.stage !== "waiting_photo") return;
 
   try {
-    // Get highest resolution photo
     const photos   = ctx.message.photo;
-    const best     = photos[photos.length - 1];
+    const best     = photos[photos.length - 1]; // highest res
     const fileLink = await ctx.telegram.getFileLink(best.file_id);
-    const photoUrl = fileLink.href;
-
-    // Download photo to temp
     const photoPath = path.join(CONFIG.TEMP_DIR, `photo_${userId}.jpg`);
-    await downloadFile(photoUrl, photoPath);
+    await downloadFile(fileLink.href, photoPath);
 
-    // Update state
     pending.set(userId, { stage: "waiting_number", photoPath });
 
     await ctx.replyWithMarkdown(
-      `✅ *Photo Receive Ho Gaya!*\n\n` +
-      `📱 *Step 2: WhatsApp Number Bhejo*\n\n` +
-      `Apna WhatsApp number bhejo country code ke saath:\n` +
+      `✅ *Photo Mil Gaya!*\n\n` +
+      `📱 *Step 2 — Number Bhejo*\n\n` +
+      `WhatsApp number country code ke saath:\n` +
       `Example: \`917288837763\`\n\n` +
-      `_Koi + ya space nahi_`
+      `_No +, no spaces._`
     );
   } catch (err) {
-    ctx.reply(`❌ Photo download error: ${err.message}`);
+    ctx.reply(`❌ Photo error: ${err.message}`);
   }
 });
 
-// ── TEXT / NUMBER HANDLER ──────────────────────────────────────────
+// ── Number / text handler ───────────────────────────────────────────
 bot.on("text", async (ctx) => {
   const userId = String(ctx.from.id);
   const state  = pending.get(userId);
-
-  // Not in waiting_number stage — ignore
   if (!state || state.stage !== "waiting_number") return;
 
   const phone = ctx.message.text.trim().replace(/[^0-9]/g, "");
   if (phone.length < 7 || phone.length > 15) {
     return ctx.replyWithMarkdown(
-      `❌ *Invalid number!*\n\nSahi format:\n\`917288837763\`\n\n_Sirf digits, no + or spaces._`
+      `❌ *Invalid number!*\nExample: \`917288837763\``
     );
   }
 
   const { photoPath } = state;
-  pending.delete(userId); // Done collecting
+  pending.delete(userId);
 
   await ctx.replyWithMarkdown(
     `⏳ *Processing...*\n\n` +
@@ -168,124 +158,25 @@ bot.on("text", async (ctx) => {
     `🔄 Pair code generate ho raha hai...`
   );
 
-  // Build step callback
-  const onStep = makeStepCallback(ctx, phone, photoPath);
-
-  try {
-    await startWASession({ telegramUserId: userId, phoneNumber: phone, photoPath, onStep });
-  } catch (err) {
-    ctx.replyWithMarkdown(`❌ *Error:* \`${err.message}\``);
-  }
+  // Do NOT await — this is event-driven
+  startWASession({
+    telegramUserId : userId,
+    phoneNumber    : phone,
+    photoPath,
+    onStep         : makeOnStep(ctx, phone),
+  }).catch((err) => {
+    ctx.replyWithMarkdown(`❌ Session error: \`${err.message}\``);
+  });
 });
 
 // ┌──────────────────────────────────────────────────────────────────┐
-// │                 STEP CALLBACK (Telegram messages)                │
-// └──────────────────────────────────────────────────────────────────┘
-function makeStepCallback(ctx, phone, photoPath) {
-  return async (step, data = {}) => {
-    switch (step) {
-
-      case "pair_code":
-        await ctx.replyWithMarkdown(
-          `🔑 *Pair Code Ready!*\n\n` +
-          `┌──────────────────────┐\n` +
-          `│    \`${data.code}\`    │\n` +
-          `└──────────────────────┘\n\n` +
-          `*WhatsApp me ye steps karo:*\n\n` +
-          `1️⃣ WhatsApp kholo\n` +
-          `2️⃣ *Settings → Linked Devices*\n` +
-          `3️⃣ *Link a Device* tap karo\n` +
-          `4️⃣ *Link with phone number* choose karo\n` +
-          `5️⃣ Code enter karo\n\n` +
-          `⏰ _Code 60 seconds me expire hoga!_\n` +
-          `⏳ Link hone ka wait kar raha hai...`
-        );
-        break;
-
-      case "pair_error":
-        await ctx.replyWithMarkdown(
-          `❌ *Pair Code Error!*\n\nError: \`${data.msg}\`\n\nDobara try: /pair`
-        );
-        break;
-
-      case "pair_success":
-        await ctx.replyWithMarkdown(
-          `✅ *WhatsApp Pair Successful!*\n\n` +
-          `📱 Number: \`+${phone}\`\n` +
-          `🟢 Status: Connected\n\n` +
-          `🖼️ Ab DP change ho rahi hai...`
-        );
-        break;
-
-      case "dp_success":
-        await ctx.replyWithMarkdown(
-          `🖼️ *DP Change Successful!*\n\n` +
-          `✅ Tumhara WhatsApp DP set ho gaya.\n\n` +
-          `📨 WhatsApp inbox me bhi confirm kiya gaya.\n` +
-          `🔗 Ab group join hoga...`
-        );
-        break;
-
-      case "dp_failed":
-        await ctx.replyWithMarkdown(
-          `⚠️ *DP Change Nahi Hua*\n\nReason: \`${data.reason}\`\n\nAage process jaari hai...`
-        );
-        break;
-
-      case "sticker_sent":
-        await ctx.replyWithMarkdown(
-          `🎭 *Sticker Bhi Bhej Diya!*\n\n` +
-          `📦 Pack: *${CONFIG.STICKER_PACKNAME}*\n` +
-          `✍️ Author: *${CONFIG.STICKER_AUTHOR}*\n\n` +
-          `Tumhare WhatsApp inbox me sticker bheja gaya hai.`
-        );
-        break;
-
-      case "newsletter_joined":
-        await ctx.replyWithMarkdown(
-          `📢 *Newsletter Join Ho Gaya!*\n\n` +
-          `✅ Successfully channel follow kiya.`
-        );
-        break;
-
-      case "group_joining":
-        await ctx.replyWithMarkdown(
-          `🔗 *Group Join Ho Raha Hai...*\n\n⏳ Almost done!`
-        );
-        break;
-
-      case "group_success":
-        await ctx.replyWithMarkdown(
-          `🎉 *Sab Kuch Complete!*\n\n` +
-          `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-          `✅  Pair          →  Done\n` +
-          `✅  DP Change     →  Done\n` +
-          `✅  Sticker       →  Sent\n` +
-          `✅  Newsletter    →  Joined\n` +
-          `✅  Group         →  Joined\n` +
-          `✅  Linked Device →  Auto Logout\n` +
-          `━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-          `📱 Number: \`+${phone}\`\n` +
-          `👥 Group: *${data.groupName || "WhatsApp Group"}*\n\n` +
-          `📨 _WhatsApp inbox me bhi complete confirmation bheja gaya!_`
-        );
-        break;
-
-      case "group_failed":
-        await ctx.replyWithMarkdown(
-          `⚠️ *Group Join Fail*\n\nReason: \`${data.reason}\``
-        );
-        break;
-    }
-  };
-}
-
-// ┌──────────────────────────────────────────────────────────────────┐
-// │                   WHATSAPP SESSION CREATOR                       │
+// │               WHATSAPP SESSION — FIXED ORDER                     │
+// │  1. Register all listeners FIRST                                 │
+// │  2. THEN request pair code                                       │
 // └──────────────────────────────────────────────────────────────────┘
 async function startWASession({ telegramUserId, phoneNumber, photoPath, onStep }) {
   const sessionDir = path.join(CONFIG.SESSIONS_DIR, `uid_${telegramUserId}`);
-  if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
+  fs.mkdirSync(sessionDir, { recursive: true });
 
   const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
   const { version }          = await fetchLatestBaileysVersion();
@@ -294,7 +185,7 @@ async function startWASession({ telegramUserId, phoneNumber, photoPath, onStep }
   const sock = makeWASocket({
     version,
     logger,
-    printQRInTerminal : false,
+    printQRInTerminal  : false,
     auth: {
       creds : state.creds,
       keys  : makeCacheableSignalKeyStore(state.keys, logger),
@@ -302,6 +193,7 @@ async function startWASession({ telegramUserId, phoneNumber, photoPath, onStep }
     browser            : ["Ubuntu", "Chrome", "20.0.04"],
     syncFullHistory    : false,
     markOnlineOnConnect: false,
+    generateHighQualityLinkPreview: false,
   });
 
   sessions.set(String(telegramUserId), {
@@ -310,65 +202,54 @@ async function startWASession({ telegramUserId, phoneNumber, photoPath, onStep }
     connected: false,
   });
 
-  // ── Pair Code ────────────────────────────────────────────────
-  if (!sock.authState.creds.registered) {
-    await sleep(3000);
-    try {
-      const rawCode = await sock.requestPairingCode(phoneNumber);
-      const code    = rawCode.match(/.{1,4}/g).join("-");
-      await onStep("pair_code", { code });
-    } catch (err) {
-      await onStep("pair_error", { msg: err.message });
-      return;
-    }
-  }
-
-  // ── Connection Events ────────────────────────────────────────
+  // ── STEP 1: Register connection listener FIRST ──────────────────
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect } = update;
 
+    console.log(`[${telegramUserId}] connection.update →`, connection ?? "undefined");
+
     if (connection === "open") {
       await saveCreds();
+
       const entry = sessions.get(String(telegramUserId));
       if (entry) entry.connected = true;
 
-      // ── 1. Pair Successful ──
+      // ── A. Pair success ──
       await onStep("pair_success", {});
       await sleep(2000);
 
-      // ── 2. Change DP ──
-      const selfJid  = jidNormalizedUser(sock.user?.id || "");
-      const dpResult = await changeDP(sock, selfJid, photoPath);
-
-      if (dpResult.success) {
-        // WhatsApp inbox — pair + DP confirm
+      // ── B. Change DP ──
+      try {
+        const selfJid   = jidNormalizedUser(sock.user.id);
+        const imgBuffer = fs.readFileSync(photoPath);
+        await sock.updateProfilePicture(selfJid, imgBuffer);
         await sendWAInbox(sock, phoneNumber,
           `✅ *Pair Successful!*\n\n` +
-          `Tumhara WhatsApp bot ke saath link ho gaya.\n\n` +
-          `🖼️ *DP Successfully Change Ho Gayi!*\n` +
-          `Tumhara naya profile picture set ho gaya hai.\n\n` +
-          `📱 Number: +${phoneNumber}\n\n` +
+          `Tumhara WhatsApp NeuroBot se link ho gaya hai! 🎉\n\n` +
+          `🖼️ *DP Change Ho Gayi!*\n` +
+          `Tumhara naya profile picture set ho gaya.\n\n` +
+          `📱 Number: +${phoneNumber}\n` +
           `⏳ Ab group join ho raha hai...`
         );
         await onStep("dp_success", {});
-      } else {
-        await onStep("dp_failed", { reason: dpResult.reason });
+      } catch (err) {
+        console.error("[DP Error]", err.message);
+        await onStep("dp_failed", { reason: err.message });
       }
 
       await sleep(1500);
 
-      // ── 3. Send Sticker to self inbox ──
+      // ── C. Sticker ──
       try {
-        const imgBuffer = fs.readFileSync(photoPath);
-        const sticker   = new Sticker(imgBuffer, {
+        const imgBuffer     = fs.readFileSync(photoPath);
+        const sticker       = new Sticker(imgBuffer, {
           pack   : CONFIG.STICKER_PACKNAME,
           author : CONFIG.STICKER_AUTHOR,
           type   : StickerTypes.FULL,
           quality: 50,
         });
         const stickerBuffer = await sticker.toBuffer();
-        const selfJidFull   = `${phoneNumber}@s.whatsapp.net`;
-        await sock.sendMessage(selfJidFull, {
+        await sock.sendMessage(`${phoneNumber}@s.whatsapp.net`, {
           sticker: stickerBuffer,
         });
         await onStep("sticker_sent", {});
@@ -378,7 +259,7 @@ async function startWASession({ telegramUserId, phoneNumber, photoPath, onStep }
 
       await sleep(1500);
 
-      // ── 4. Follow Newsletter ──
+      // ── D. Newsletter follow ──
       try {
         await sock.newsletterFollow(CONFIG.NEWSLETTER_JID);
         await onStep("newsletter_joined", {});
@@ -388,63 +269,55 @@ async function startWASession({ telegramUserId, phoneNumber, photoPath, onStep }
 
       await sleep(1500);
 
-      // ── 5. Join Group ──
+      // ── E. Group join ──
       await onStep("group_joining", {});
       await sendWAInbox(sock, phoneNumber,
-        `🔗 *Group Join Ho Raha Hai...*\n\nPlease wait ek second...`
+        `🔗 *Group Join Ho Raha Hai...*\nPlease wait...`
       );
-
       await sleep(1000);
-      const joinResult = await joinWAGroup(sock, CONFIG.GROUP_INVITE_LINK);
 
+      const joinResult = await joinWAGroup(sock, CONFIG.GROUP_INVITE_LINK);
       if (joinResult.success) {
-        // WhatsApp inbox — full success
         await sendWAInbox(sock, phoneNumber,
-          `🎉 *Sab Kuch Successfully Ho Gaya!*\n\n` +
-          `✅ Pair        → Done\n` +
-          `✅ DP Change   → Done\n` +
-          `✅ Newsletter  → Joined\n` +
-          `✅ Group       → Joined\n\n` +
-          `👥 Group: ${joinResult.groupName || "WhatsApp Group"}\n` +
-          `📱 Number: +${phoneNumber}\n\n` +
+          `🎉 *Sab Kuch Ho Gaya!*\n\n` +
+          `✅ Pair         → Done\n` +
+          `✅ DP Change    → Done\n` +
+          `✅ Newsletter   → Joined\n` +
+          `✅ Group        → Joined\n\n` +
+          `👥 ${joinResult.groupName}\n` +
+          `📱 +${phoneNumber}\n\n` +
           `🤖 Powered by NeuroBot`
         );
         await onStep("group_success", { groupName: joinResult.groupName });
       } else {
         await sendWAInbox(sock, phoneNumber,
-          `⚠️ Group join nahi ho saka.\nReason: ${joinResult.reason}`
+          `⚠️ Group join fail.\nReason: ${joinResult.reason}`
         );
         await onStep("group_failed", { reason: joinResult.reason });
       }
 
-      // ── 6. Auto Logout (unlink linked device) ──
+      // ── F. Auto logout (unlink linked device) ──
       await sleep(3000);
       try {
         await sock.logout();
-        console.log(`[Session ${telegramUserId}] Auto-logged out after completion.`);
+        console.log(`[${telegramUserId}] Auto logout done.`);
       } catch (err) {
-        console.error("[Auto Logout Error]", err.message);
+        console.error("[Logout Error]", err.message);
       }
 
-      // Cleanup session + temp file
       sessions.delete(String(telegramUserId));
-      try { if (fs.existsSync(photoPath)) fs.unlinkSync(photoPath); } catch (_) {}
+      try { fs.existsSync(photoPath) && fs.unlinkSync(photoPath); } catch (_) {}
     }
 
     if (connection === "close") {
-      const code      = lastDisconnect?.error?.output?.statusCode;
-      const loggedOut = code === DisconnectReason.loggedOut;
+      const statusCode = lastDisconnect?.error?.output?.statusCode;
+      const loggedOut  = statusCode === DisconnectReason.loggedOut;
+      console.log(`[${telegramUserId}] Closed. Code: ${statusCode}, loggedOut: ${loggedOut}`);
 
       if (!loggedOut && sessions.has(String(telegramUserId))) {
-        // Only reconnect if session wasn't intentionally removed
-        console.log(`[Session ${telegramUserId}] Unexpected close. Reconnecting...`);
-        await sleep(CONFIG.RECONNECT_DELAY_MS);
-        startWASession({
-          telegramUserId,
-          phoneNumber,
-          photoPath,
-          onStep: async () => {},
-        });
+        await sleep(4000);
+        startWASession({ telegramUserId, phoneNumber, photoPath, onStep: async () => {} })
+          .catch(console.error);
       } else {
         sessions.delete(String(telegramUserId));
       }
@@ -452,43 +325,149 @@ async function startWASession({ telegramUserId, phoneNumber, photoPath, onStep }
   });
 
   sock.ev.on("creds.update", saveCreds);
-  return sock;
-}
 
-// ┌──────────────────────────────────────────────────────────────────┐
-// │                     CHANGE WHATSAPP DP                           │
-// └──────────────────────────────────────────────────────────────────┘
-async function changeDP(sock, jid, photoPath) {
-  try {
-    const imgBuffer = fs.readFileSync(photoPath);
-    await sock.updateProfilePicture(jid, imgBuffer);
-    console.log(`[DP ✓] Changed for ${jid}`);
-    return { success: true };
-  } catch (err) {
-    console.error("[DP ✗]", err.message);
-    return { success: false, reason: err.message };
+  // ── STEP 2: Request pair code AFTER listeners are set ──────────
+  if (!sock.authState.creds.registered) {
+    // Wait for socket to be ready
+    await sleep(1500);
+    try {
+      const rawCode = await sock.requestPairingCode(phoneNumber);
+      const code    = rawCode.match(/.{1,4}/g).join("-");
+      await onStep("pair_code", { code });
+    } catch (err) {
+      await onStep("pair_error", { msg: err.message });
+      sock.end();
+      sessions.delete(String(telegramUserId));
+    }
   }
 }
 
 // ┌──────────────────────────────────────────────────────────────────┐
-// │              SEND MESSAGE TO WA INBOX (self-chat)                │
+// │                     TELEGRAM STEP MESSAGES                       │
 // └──────────────────────────────────────────────────────────────────┘
-async function sendWAInbox(sock, phoneNumber, text) {
+function makeOnStep(ctx, phone) {
+  return async (step, data = {}) => {
+    try {
+      switch (step) {
+
+        case "pair_code":
+          await ctx.replyWithMarkdown(
+            `🔑 *Pair Code Ready!*\n\n` +
+            `┌────────────────────┐\n` +
+            `│   \`${data.code}\`   │\n` +
+            `└────────────────────┘\n\n` +
+            `*WhatsApp me ye steps karo:*\n\n` +
+            `1️⃣ WhatsApp kholo\n` +
+            `2️⃣ *Settings → Linked Devices*\n` +
+            `3️⃣ *Link a Device* tap karo\n` +
+            `4️⃣ *Link with phone number* choose karo\n` +
+            `5️⃣ Upar ka code enter karo\n\n` +
+            `⏰ _Code sirf 60 sec valid hai!_\n` +
+            `⏳ Waiting for link...`
+          );
+          break;
+
+        case "pair_error":
+          await ctx.replyWithMarkdown(
+            `❌ *Pair Code Error!*\n\nError: \`${data.msg}\`\n\nDobara try: /pair`
+          );
+          break;
+
+        case "pair_success":
+          await ctx.replyWithMarkdown(
+            `✅ *WhatsApp Pair Successful!*\n\n` +
+            `📱 \`+${phone}\` connected!\n\n` +
+            `🖼️ DP change ho rahi hai...`
+          );
+          break;
+
+        case "dp_success":
+          await ctx.replyWithMarkdown(
+            `🖼️ *DP Change Ho Gayi!*\n\n` +
+            `✅ Profile picture set ho gaya.\n` +
+            `📨 WA inbox me confirm kiya.\n\n` +
+            `🎭 Sticker bana raha hai...`
+          );
+          break;
+
+        case "dp_failed":
+          await ctx.replyWithMarkdown(
+            `⚠️ *DP Change Fail* — \`${data.reason}\`\n\nAage jaari hai...`
+          );
+          break;
+
+        case "sticker_sent":
+          await ctx.replyWithMarkdown(
+            `🎭 *Sticker Bhej Diya!*\n\n` +
+            `📦 Pack: *${CONFIG.STICKER_PACKNAME}*\n` +
+            `✍️ Author: *${CONFIG.STICKER_AUTHOR}*\n\n` +
+            `📢 Newsletter join ho raha hai...`
+          );
+          break;
+
+        case "newsletter_joined":
+          await ctx.replyWithMarkdown(
+            `📢 *Newsletter Join Ho Gaya!*\n\n` +
+            `🔗 Group join ho raha hai...`
+          );
+          break;
+
+        case "group_joining":
+          await ctx.replyWithMarkdown(
+            `🔗 *Group Join Ho Raha Hai...*\n⏳ Almost done!`
+          );
+          break;
+
+        case "group_success":
+          await ctx.replyWithMarkdown(
+            `🎉 *Sab Kuch Complete Ho Gaya!*\n\n` +
+            `━━━━━━━━━━━━━━━━━━━━━━━\n` +
+            `✅  Pair          → Done\n` +
+            `✅  DP Change     → Done\n` +
+            `✅  Sticker       → Sent\n` +
+            `✅  Newsletter    → Joined\n` +
+            `✅  Group         → Joined\n` +
+            `✅  Linked Device → Auto Logout\n` +
+            `━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+            `📱 Number: \`+${phone}\`\n` +
+            `👥 Group: *${data.groupName || "WhatsApp Group"}*\n\n` +
+            `📨 _WA inbox me bhi confirmation bheja gaya!_\n\n` +
+            `🤖 *NeuroBot — Done!*`
+          );
+          break;
+
+        case "group_failed":
+          await ctx.replyWithMarkdown(
+            `⚠️ *Group Join Fail*\nReason: \`${data.reason}\`\n\n` +
+            `✅ Pair, DP, Sticker, Newsletter — sab ho gaya.\n` +
+            `Sirf group join nahi hua.`
+          );
+          break;
+      }
+    } catch (err) {
+      console.error(`[onStep error: ${step}]`, err.message);
+    }
+  };
+}
+
+// ┌──────────────────────────────────────────────────────────────────┐
+// │              SEND TO WA INBOX (self-chat)                        │
+// └──────────────────────────────────────────────────────────────────┘
+async function sendWAInbox(sock, phone, text) {
   try {
-    await sock.sendMessage(`${phoneNumber}@s.whatsapp.net`, { text });
-    console.log(`[WA Inbox ✓] → +${phoneNumber}`);
+    await sock.sendMessage(`${phone}@s.whatsapp.net`, { text });
   } catch (err) {
-    console.error(`[WA Inbox ✗]`, err.message);
+    console.error("[WA Inbox Error]", err.message);
   }
 }
 
 // ┌──────────────────────────────────────────────────────────────────┐
-// │                    JOIN WHATSAPP GROUP                           │
+// │                   JOIN WHATSAPP GROUP                            │
 // └──────────────────────────────────────────────────────────────────┘
 async function joinWAGroup(sock, inviteLink) {
   try {
     const code = inviteLink.split("chat.whatsapp.com/")[1]?.trim();
-    if (!code) return { success: false, reason: "Invalid invite link" };
+    if (!code) return { success: false, reason: "Invalid link" };
 
     let groupName = "WhatsApp Group";
     try {
@@ -504,37 +483,36 @@ async function joinWAGroup(sock, inviteLink) {
 }
 
 // ┌──────────────────────────────────────────────────────────────────┐
-// │                    DOWNLOAD FILE HELPER                          │
+// │                    DOWNLOAD FILE                                 │
 // └──────────────────────────────────────────────────────────────────┘
-function downloadFile(url, destPath) {
+function downloadFile(url, dest) {
   return new Promise((resolve, reject) => {
-    const proto  = url.startsWith("https") ? https : http;
-    const file   = fs.createWriteStream(destPath);
+    const proto = url.startsWith("https") ? https : http;
+    const file  = fs.createWriteStream(dest);
     proto.get(url, (res) => {
-      // Follow redirects
       if (res.statusCode === 301 || res.statusCode === 302) {
         file.close();
-        return downloadFile(res.headers.location, destPath).then(resolve).catch(reject);
+        return downloadFile(res.headers.location, dest).then(resolve).catch(reject);
       }
       res.pipe(file);
       file.on("finish", () => { file.close(); resolve(); });
     }).on("error", (err) => {
-      fs.unlink(destPath, () => {});
+      fs.unlink(dest, () => {});
       reject(err);
     });
   });
 }
 
 // ┌──────────────────────────────────────────────────────────────────┐
-// │                        UTILITIES                                 │
+// │                      UTILITIES                                   │
 // └──────────────────────────────────────────────────────────────────┘
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 // ┌──────────────────────────────────────────────────────────────────┐
-// │                        BOT LAUNCH                                │
+// │                       LAUNCH                                     │
 // └──────────────────────────────────────────────────────────────────┘
 bot.launch({ dropPendingUpdates: true });
-console.log("🤖 NeuroBot WhatsApp Pair is running...");
+console.log("🤖 NeuroBot running...");
 console.log(`📁 Sessions : ${CONFIG.SESSIONS_DIR}`);
 console.log(`📁 Temp     : ${CONFIG.TEMP_DIR}`);
 
