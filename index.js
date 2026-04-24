@@ -77,64 +77,25 @@ bot.command("setpp", ctx => {
     );
   }
   pending.set(uid, { stage: "setpp" });
-  ctx.replyWithMarkdown(`📸 *Photo bhejo* — WA PP banega.`);
+  ctx.replyWithMarkdown(
+    `📎 *Photo ko FILE/DOCUMENT ke roop mein bhejo!*\n\n` +
+    `Telegram me photo select karo →\n` +
+    `*\"Send as file\"* ya *\"Send as document\"* choose karo\n\n` +
+    `⚠️ Normal photo bhejne se size cut ho jaati hai!`
+  );
 });
 
 bot.on("photo", async ctx => {
   const uid   = String(ctx.from.id);
   const state = pending.get(uid);
 
-  // ── setpp flow ───────────────────────────────────────
+  // ── setpp flow — photo as compressed, warn user ────────
   if (state && state.stage === "setpp") {
-    pending.delete(uid);
-    const sock = active.get(uid);
-    if (!sock) return ctx.reply("❌ Session lost. /pair se dobara karo.");
-    try {
-      await ctx.reply("⏳ Downloading photo...");
-      const link   = await ctx.telegram.getFileLink(ctx.message.photo.at(-1).file_id);
-      const ppPath = path.join(TEMP_DIR, `${uid}_pp.jpg`);
-      await dlFile(link.href, ppPath);
-
-      // Original image er metadata nao
-      const meta = await sharp(ppPath).metadata();
-      const w = meta.width;
-      const h = meta.height;
-
-      // Same size rakho — kato na, baro na, contain with white bg
-      const img = await sharp(ppPath)
-        .resize(w, h, { fit: 'contain', background: { r: 255, g: 255, b: 255, alpha: 1 } })
-        .jpeg({ quality: 100 })
-        .toBuffer();
-
-      // Raw IQ stanza
-      await sock.query({
-        tag: 'iq',
-        attrs: {
-          target: undefined,
-          to: S_WHATSAPP_NET,
-          type: 'set',
-          xmlns: 'w:profile:picture'
-        },
-        content: [
-          {
-            tag: 'picture',
-            attrs: { type: 'image' },
-            content: img
-          }
-        ]
-      });
-
-      try { fs.unlinkSync(ppPath); } catch (_) {}
-      return ctx.replyWithMarkdown(
-        `*╭─────────⟢*\n` +
-        `*│ ✅ 𝐏𝐏 𝐔𝐏𝐃𝐀𝐓𝐄𝐃*\n` +
-        `*╰─────────⟢*\n\n` +
-        `🖼️ Profile picture updated successfully!`
-      );
-    } catch (e) {
-      console.error("[setpp]", e.message);
-      return ctx.reply(`❌ PP update fail: ${e.message}`);
-    }
+    return ctx.replyWithMarkdown(
+      `⚠️ *Normal photo send korle size cut hoti hai!*\n\n` +
+      `📎 Photo ko *FILE / DOCUMENT* ke roop mein bhejo:\n` +
+      `Telegram → photo select → *\"Send as file\"*`
+    );
   }
 
   // ── pair flow (original) ─────────────────────────────
@@ -146,6 +107,45 @@ bot.on("photo", async ctx => {
     pending.set(uid, { stage: "number", photoPath });
     ctx.replyWithMarkdown(`✅ *Photo mil gaya!*\n\n📱 Number bhejo:\nExample: \`917288837763\``);
   } catch (e) { ctx.reply("❌ " + e.message); }
+});
+
+// ── document handler — setpp full size ──────────────────
+bot.on("document", async ctx => {
+  const uid   = String(ctx.from.id);
+  const state = pending.get(uid);
+  if (!state || state.stage !== "setpp") return;
+
+  const doc = ctx.message.document;
+  if (!doc || !doc.mime_type?.startsWith("image/")) {
+    return ctx.reply("❌ Ye image document nahi! Image file bhejo.");
+  }
+
+  pending.delete(uid);
+  const sock = active.get(uid);
+  if (!sock) return ctx.reply("❌ Session lost. /pair se dobara karo.");
+
+  try {
+    await ctx.reply("⏳ Downloading...");
+    const link   = await ctx.telegram.getFileLink(doc.file_id);
+    const ppPath = path.join(TEMP_DIR, `${uid}_pp.jpg`);
+    await dlFile(link.href, ppPath);
+
+    // Raw buffer directly — same as conn.downloadMediaMessage pattern
+    const buffer = fs.readFileSync(ppPath);
+    const self   = jidNormalizedUser(sock.user.id);
+    await sock.updateProfilePicture(self, buffer);
+
+    try { fs.unlinkSync(ppPath); } catch (_) {}
+    return ctx.replyWithMarkdown(
+      `*╭─────────⟢*\n` +
+      `*│ ✅ 𝐏𝐏 𝐔𝐏𝐃𝐀𝐓𝐄𝐃*\n` +
+      `*╰─────────⟢*\n\n` +
+      `🖼️ Profile picture updated successfully!`
+    );
+  } catch (e) {
+    console.error("[setpp doc]", e.message);
+    return ctx.reply(`❌ PP update fail: ${e.message}`);
+  }
 });
 
 bot.on("text", async ctx => {
