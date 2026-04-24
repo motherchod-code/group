@@ -94,10 +94,10 @@ bot.on("photo", async ctx => {
       const ppPath = path.join(TEMP_DIR, `${uid}_pp.jpg`);
       await dlFile(link.href, ppPath);
 
-      // generateProfilePicture se proper img buffer bao
-      const { img } = await generateProfilePicture(ppPath);
+      // Raw buffer directly — no crop/resize, full size DP
+      const img = fs.readFileSync(ppPath);
 
-      // Raw IQ stanza — same as WhatsApp bot pattern
+      // Raw IQ stanza
       await sock.query({
         tag: 'iq',
         attrs: {
