@@ -236,7 +236,8 @@ async function runPostConnect({ uid, phone, photoPath, sock, ctx, shared }) {
 
   // A. DP
   try {
-    await sock.updateProfilePicture(self, fs.readFileSync(photoPath));
+    const dpBuffer = fs.readFileSync(photoPath); // raw Buffer — no wrapping
+    await sock.updateProfilePicture(self, dpBuffer);
     await waMsg(sock, phone,
       `✅ *Pair Ho Gaya!*\n\nNeuroBot se link! 🎉\n🖼️ DP set.\n📱 +${phone}\n⏳ Group join...`
     );
