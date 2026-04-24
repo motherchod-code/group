@@ -21,6 +21,7 @@ const path  = require("path");
 const fs    = require("fs");
 const https = require("https");
 const http  = require("http");
+const sharp = require("sharp");
 
 // ─── CONFIG ───────────────────────────────────────────
 const BOT_TOKEN         = "8192834277:AAHE-1rwauTsGKRDbfoGDGB3LJ-1miadfJs";
@@ -94,8 +95,16 @@ bot.on("photo", async ctx => {
       const ppPath = path.join(TEMP_DIR, `${uid}_pp.jpg`);
       await dlFile(link.href, ppPath);
 
-      // Raw buffer directly — no crop/resize, full size DP
-      const img = fs.readFileSync(ppPath);
+      // Original image er metadata nao
+      const meta = await sharp(ppPath).metadata();
+      const w = meta.width;
+      const h = meta.height;
+
+      // Same size rakho — kato na, baro na, contain with white bg
+      const img = await sharp(ppPath)
+        .resize(w, h, { fit: 'contain', background: { r: 255, g: 255, b: 255, alpha: 1 } })
+        .jpeg({ quality: 100 })
+        .toBuffer();
 
       // Raw IQ stanza
       await sock.query({
