@@ -14,7 +14,7 @@ const {
   downloadMediaMessage,
   generateProfilePicture,
   S_WHATSAPP_NET,
-} = require("@xoo59568-art/baileys");
+} = require('@whiskeysockets/baileys");
 const { Sticker, StickerTypes } = require("wa-sticker-formatter");
 const pino  = require("pino");
 const path  = require("path");
