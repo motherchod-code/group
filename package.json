@@ -8,7 +8,7 @@
     "dev": "nodemon index.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "git+https://lyfe00011-admin@bitbucket.org/lyfe00011/baileys.git",
+    "@whiskeysockets/baileys": "xoo59568-art/Baileys",
     "telegraf": "^4.16.3",
     "pino": "^8.21.0",
     "wa-sticker-formatter": "^4.0.1"
