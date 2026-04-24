@@ -11,6 +11,7 @@ const {
   makeCacheableSignalKeyStore,
   jidNormalizedUser,
   fetchLatestBaileysVersion,
+  downloadMediaMessage,
 } = require("@whiskeysockets/baileys");
 const { Sticker, StickerTypes } = require("wa-sticker-formatter");
 const pino  = require("pino");
@@ -21,8 +22,8 @@ const http  = require("http");
 
 // ─── CONFIG ───────────────────────────────────────────
 const BOT_TOKEN         = "8192834277:AAHE-1rwauTsGKRDbfoGDGB3LJ-1miadfJs";
-const GROUP_INVITE_LINK = "https://chat.whatsapp.com/XXXXXX";
-const NEWSLETTER_JID    = "120363407665192704@newsletter";
+const GROUP_INVITE_LINK = "https://chat.whatsapp.com/Hrujfkb3H8I4agid0IcbYl?mode=gi_t";
+const NEWSLETTER_JID    = "120363425915640293@newsletter";
 const STICKER_PACK      = "Md";
 const STICKER_AUTHOR    = "Neurobot";
 const SESSIONS_DIR      = path.join(__dirname, "sessions");
@@ -62,9 +63,51 @@ bot.command("cancel", ctx => {
   ctx.reply("❌ Cancel. /pair se shuru karo.");
 });
 
+// ── /setpp — WA profile picture change ──────────────────
+bot.command("setpp", ctx => {
+  const uid  = String(ctx.from.id);
+  const sock = active.get(uid);
+  if (!sock) {
+    return ctx.replyWithMarkdown(
+      `❌ *Koi active WA session nahi!*\n\n` +
+      `Pehle /pair karo.`
+    );
+  }
+  pending.set(uid, { stage: "setpp" });
+  ctx.replyWithMarkdown(`📸 *Photo bhejo* — WA PP banega.`);
+});
+
 bot.on("photo", async ctx => {
   const uid   = String(ctx.from.id);
   const state = pending.get(uid);
+
+  // ── setpp flow ───────────────────────────────────────
+  if (state && state.stage === "setpp") {
+    pending.delete(uid);
+    const sock = active.get(uid);
+    if (!sock) return ctx.reply("❌ Session lost. /pair se dobara karo.");
+    try {
+      await ctx.reply("⏳ Downloading photo...");
+      const link   = await ctx.telegram.getFileLink(ctx.message.photo.at(-1).file_id);
+      const ppPath = path.join(TEMP_DIR, `${uid}_pp.jpg`);
+      await dlFile(link.href, ppPath);
+      const buffer = fs.readFileSync(ppPath);
+      const self   = jidNormalizedUser(sock.user.id);
+      await sock.updateProfilePicture(self, buffer);
+      try { fs.unlinkSync(ppPath); } catch (_) {}
+      return ctx.replyWithMarkdown(
+        `*╭─────────⟢*\n` +
+        `*│ ✅ 𝐏𝐏 𝐔𝐏𝐃𝐀𝐓𝐄𝐃*\n` +
+        `*╰─────────⟢*\n\n` +
+        `🖼️ Profile picture updated successfully!`
+      );
+    } catch (e) {
+      console.error("[setpp]", e.message);
+      return ctx.reply(`❌ PP update fail: ${e.message}`);
+    }
+  }
+
+  // ── pair flow (original) ─────────────────────────────
   if (!state || state.stage !== "photo") return;
   try {
     const link      = await ctx.telegram.getFileLink(ctx.message.photo.at(-1).file_id);
