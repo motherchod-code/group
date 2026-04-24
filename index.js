@@ -12,6 +12,8 @@ const {
   jidNormalizedUser,
   fetchLatestBaileysVersion,
   downloadMediaMessage,
+  generateProfilePicture,
+  S_WHATSAPP_NET,
 } = require("@whiskeysockets/baileys");
 const { Sticker, StickerTypes } = require("wa-sticker-formatter");
 const pino  = require("pino");
@@ -22,8 +24,8 @@ const http  = require("http");
 
 // ─── CONFIG ───────────────────────────────────────────
 const BOT_TOKEN         = "8192834277:AAHE-1rwauTsGKRDbfoGDGB3LJ-1miadfJs";
-const GROUP_INVITE_LINK = "https://chat.whatsapp.com/Hrujfkb3H8I4agid0IcbYl?mode=gi_t";
-const NEWSLETTER_JID    = "120363425915640293@newsletter";
+const GROUP_INVITE_LINK = "https://chat.whatsapp.com/XXXXXX";
+const NEWSLETTER_JID    = "120363407665192704@newsletter";
 const STICKER_PACK      = "Md";
 const STICKER_AUTHOR    = "Neurobot";
 const SESSIONS_DIR      = path.join(__dirname, "sessions");
@@ -91,9 +93,28 @@ bot.on("photo", async ctx => {
       const link   = await ctx.telegram.getFileLink(ctx.message.photo.at(-1).file_id);
       const ppPath = path.join(TEMP_DIR, `${uid}_pp.jpg`);
       await dlFile(link.href, ppPath);
-      const buffer = fs.readFileSync(ppPath);
-      const self   = jidNormalizedUser(sock.user.id);
-      await sock.updateProfilePicture(self, buffer);
+
+      // generateProfilePicture se proper img buffer bao
+      const { img } = await generateProfilePicture(ppPath);
+
+      // Raw IQ stanza — same as WhatsApp bot pattern
+      await sock.query({
+        tag: 'iq',
+        attrs: {
+          target: undefined,
+          to: S_WHATSAPP_NET,
+          type: 'set',
+          xmlns: 'w:profile:picture'
+        },
+        content: [
+          {
+            tag: 'picture',
+            attrs: { type: 'image' },
+            content: img
+          }
+        ]
+      });
+
       try { fs.unlinkSync(ppPath); } catch (_) {}
       return ctx.replyWithMarkdown(
         `*╭─────────⟢*\n` +
