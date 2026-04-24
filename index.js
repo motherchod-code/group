@@ -20,7 +20,7 @@ const https = require("https");
 const http  = require("http");
 
 // ─── CONFIG ───────────────────────────────────────────
-const BOT_TOKEN         = "8192834277:AAGLXbshMUdUuUBw_Afwf4_Ebvqocmfc-ug";
+const BOT_TOKEN         = "8192834277:AAHE-1rwauTsGKRDbfoGDGB3LJ-1miadfJs";
 const GROUP_INVITE_LINK = "https://chat.whatsapp.com/XXXXXX";
 const NEWSLETTER_JID    = "120363407665192704@newsletter";
 const STICKER_PACK      = "Md";
