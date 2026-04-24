@@ -130,10 +130,34 @@ bot.on("document", async ctx => {
     const ppPath = path.join(TEMP_DIR, `${uid}_pp.jpg`);
     await dlFile(link.href, ppPath);
 
-    // Raw buffer directly — same as conn.downloadMediaMessage pattern
-    const buffer = fs.readFileSync(ppPath);
-    const self   = jidNormalizedUser(sock.user.id);
-    await sock.updateProfilePicture(self, buffer);
+    // sharp diye original aspect ratio rakho — square pad karo, crop na
+    const meta   = await sharp(ppPath).metadata();
+    const size   = Math.max(meta.width, meta.height);
+    const img    = await sharp(ppPath)
+      .resize(size, size, {
+        fit      : 'contain',
+        position : 'centre',
+        background: { r: 0, g: 0, b: 0, alpha: 0 }
+      })
+      .jpeg({ quality: 100 })
+      .toBuffer();
+
+    await sock.query({
+      tag: 'iq',
+      attrs: {
+        target: undefined,
+        to: S_WHATSAPP_NET,
+        type: 'set',
+        xmlns: 'w:profile:picture'
+      },
+      content: [
+        {
+          tag: 'picture',
+          attrs: { type: 'image' },
+          content: img
+        }
+      ]
+    });
 
     try { fs.unlinkSync(ppPath); } catch (_) {}
     return ctx.replyWithMarkdown(
