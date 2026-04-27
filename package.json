@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@whiskeysockets/baileys": "github:xoo59568-art/Baileys",
+    "yt-search": "^2.13.1",
     "telegraf": "^4.16.3",
     "pino": "^8.21.0",
     "wa-sticker-formatter": "^4.0.1"
