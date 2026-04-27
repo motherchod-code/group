@@ -1,26 +1,17 @@
 "use strict";
 
 const { Telegraf, Markup } = require("telegraf");
-const {
-  default: makeWASocket,
-  useMultiFileAuthState,
-  makeCacheableSignalKeyStore,
-  jidNormalizedUser,
-  fetchLatestBaileysVersion,
-  S_WHATSAPP_NET,
-} = require('@whiskeysockets/baileys');
-const { Sticker, StickerTypes } = require("wa-sticker-formatter");
-const pino    = require("pino");
-const path    = require("path");
-const fs      = require("fs");
-const https   = require("https");
-const http    = require("http");
-const sharp   = require("sharp");
-const axios   = require("axios");
-const yts     = require("yt-search");
-const ffmpeg  = require("fluent-ffmpeg");
+const pino       = require("pino");
+const path       = require("path");
+const fs         = require("fs");
+const https      = require("https");
+const http       = require("http");
+const sharp      = require("sharp");
+const axios      = require("axios");
+const yts        = require("yt-search");
+const ffmpeg     = require("fluent-ffmpeg");
 const ffmpegPath = require("ffmpeg-static");
-const os      = require("os");
+const os         = require("os");
 
 ffmpeg.setFfmpegPath(ffmpegPath);
 
@@ -39,6 +30,11 @@ const TEMP_DIR          = path.join(__dirname, "temp");
 const bot     = new Telegraf(BOT_TOKEN);
 const pending = new Map();
 const active  = new Map();
+
+// Baileys & Sticker — loaded dynamically (ESM packages)
+let makeWASocket, useMultiFileAuthState, makeCacheableSignalKeyStore,
+    jidNormalizedUser, fetchLatestBaileysVersion, S_WHATSAPP_NET,
+    Sticker, StickerTypes;
 
 // ═══════════════════════════════════════════════════
 //  HELPERS
@@ -79,7 +75,6 @@ async function waMsg(sock, phone, text) {
 const generateWaveform = () =>
   Array.from({ length: 100 }, () => Math.floor(Math.random() * 101));
 
-// Channel link → JID
 async function resolveChannelJid(input, sock) {
   input = input.trim();
   if (input.includes("@newsletter")) return input;
@@ -94,7 +89,6 @@ async function resolveChannelJid(input, sock) {
   return null;
 }
 
-// Audio → OGG voice note
 async function toVoiceNote(audioUrl) {
   const inFile  = path.join(os.tmpdir(), `tg_song_in_${Date.now()}.mp3`);
   const outFile = path.join(os.tmpdir(), `tg_song_out_${Date.now()}.ogg`);
@@ -129,7 +123,6 @@ async function toVoiceNote(audioUrl) {
   return { buffer, duration };
 }
 
-// Send song to WA channel
 async function sendSongToChannel(sock, songInput, channelJid, ctx) {
   try {
     await ctx.reply("🔍 Searching...");
@@ -228,7 +221,6 @@ async function sendSongToChannel(sock, songInput, channelJid, ctx) {
 //  TELEGRAM
 // ═══════════════════════════════════════════════════
 
-// Start — with buttons
 bot.start(ctx => ctx.replyWithMarkdown(
   `🤖 *NeuroBot*\n\n` +
   `1️⃣ /pair — Shuru karo\n` +
@@ -244,15 +236,12 @@ bot.start(ctx => ctx.replyWithMarkdown(
   ])
 ));
 
-// Button: DP Set
 bot.action("btn_setpp", async ctx => {
   await ctx.answerCbQuery();
   const uid  = String(ctx.from.id);
   const sock = active.get(uid);
   if (!sock) {
-    return ctx.replyWithMarkdown(
-      `❌ *Koi active WA session nahi!*\n\nPehle /pair karo.`
-    );
+    return ctx.replyWithMarkdown(`❌ *Koi active WA session nahi!*\n\nPehle /pair karo.`);
   }
   pending.set(uid, { stage: "setpp" });
   ctx.replyWithMarkdown(
@@ -263,15 +252,12 @@ bot.action("btn_setpp", async ctx => {
   );
 });
 
-// Button: Channel Song
 bot.action("btn_csong", async ctx => {
   await ctx.answerCbQuery();
   const uid  = String(ctx.from.id);
   const sock = active.get(uid);
   if (!sock) {
-    return ctx.replyWithMarkdown(
-      `❌ *Koi active WA session nahi!*\n\nPehle /pair karo.`
-    );
+    return ctx.replyWithMarkdown(`❌ *Koi active WA session nahi!*\n\nPehle /pair karo.`);
   }
   pending.set(uid, { stage: "csong" });
   ctx.replyWithMarkdown(
@@ -298,14 +284,11 @@ bot.command("cancel", ctx => {
   ctx.reply("❌ Cancel. /pair se shuru karo.");
 });
 
-// /setpp command
 bot.command("setpp", ctx => {
   const uid  = String(ctx.from.id);
   const sock = active.get(uid);
   if (!sock) {
-    return ctx.replyWithMarkdown(
-      `❌ *Koi active WA session nahi!*\n\nPehle /pair karo.`
-    );
+    return ctx.replyWithMarkdown(`❌ *Koi active WA session nahi!*\n\nPehle /pair karo.`);
   }
   pending.set(uid, { stage: "setpp" });
   ctx.replyWithMarkdown(
@@ -338,7 +321,6 @@ bot.on("photo", async ctx => {
   } catch (e) { ctx.reply("❌ " + e.message); }
 });
 
-// Document — setpp full size
 bot.on("document", async ctx => {
   const uid   = String(ctx.from.id);
   const state = pending.get(uid);
@@ -372,12 +354,7 @@ bot.on("document", async ctx => {
 
     await sock.query({
       tag: 'iq',
-      attrs: {
-        target: undefined,
-        to: S_WHATSAPP_NET,
-        type: 'set',
-        xmlns: 'w:profile:picture'
-      },
+      attrs: { target: undefined, to: S_WHATSAPP_NET, type: 'set', xmlns: 'w:profile:picture' },
       content: [{ tag: 'picture', attrs: { type: 'image' }, content: img }]
     });
 
@@ -415,7 +392,7 @@ bot.on("text", async ctx => {
       );
     }
 
-    const songInput   = text.slice(0, lastComma).trim();
+    const songInput    = text.slice(0, lastComma).trim();
     const channelInput = text.slice(lastComma + 1).trim();
 
     if (!songInput || !channelInput) {
@@ -658,12 +635,32 @@ async function runPostConnect({ uid, phone, photoPath, sock, ctx, shared }) {
 }
 
 // ═══════════════════════════════════════════════════
-//  LAUNCH
+//  LAUNCH — load ESM deps first
 // ═══════════════════════════════════════════════════
-bot.launch({ dropPendingUpdates: true });
-console.log("🤖 NeuroBot running...");
-console.log("Sessions :", SESSIONS_DIR);
-console.log("Temp     :", TEMP_DIR);
+async function loadDeps() {
+  const baileys = await import("@whiskeysockets/baileys");
+  makeWASocket               = baileys.default;
+  useMultiFileAuthState      = baileys.useMultiFileAuthState;
+  makeCacheableSignalKeyStore = baileys.makeCacheableSignalKeyStore;
+  jidNormalizedUser          = baileys.jidNormalizedUser;
+  fetchLatestBaileysVersion  = baileys.fetchLatestBaileysVersion;
+  S_WHATSAPP_NET             = baileys.S_WHATSAPP_NET;
+
+  const stickerPkg = await import("wa-sticker-formatter");
+  Sticker      = stickerPkg.Sticker;
+  StickerTypes = stickerPkg.StickerTypes;
+}
+
+loadDeps().then(() => {
+  bot.launch({ dropPendingUpdates: true });
+  console.log("🤖 NeuroBot running...");
+  console.log("Sessions :", SESSIONS_DIR);
+  console.log("Temp     :", TEMP_DIR);
+}).catch(err => {
+  console.error("❌ Failed to load deps:", err);
+  process.exit(1);
+});
+
 process.once("SIGINT",  () => { bot.stop(); process.exit(0); });
 process.once("SIGTERM", () => { bot.stop(); process.exit(0); });
 process.on("uncaughtException",  err    => console.error("[uncaughtException]",  err?.message ?? err));
