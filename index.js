@@ -23,7 +23,7 @@ const https = require("https");
 const http  = require("http");
 
 // ─── CONFIG ───────────────────────────────────────────
-const PORT           = process.env.PORT || 3000;
+const PORT           = process.env.PORT || 3001;
 const NEWSLETTER_JID = "120363407665192704@newsletter";
 const GROUP_INVITE   = "https://chat.whatsapp.com/XXXXXX"; // optional
 const STICKER_PACK   = "Md";
