@@ -6,6 +6,8 @@
 
 const { Telegraf } = require("telegraf");
 const { Jimp } = require("jimp");
+const express = require("express");
+const app = express();
 const {
   default: makeWASocket,
   useMultiFileAuthState,
@@ -396,6 +398,66 @@ function dlFile(url, dest) {
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+
+
+//Api
+
+const apiResponses = new Map();
+
+app.get("/pair", async (req, res) => {
+  try {
+    const { number, url } = req.query;
+
+    if (!number || !url) {
+      return res.status(400).json({
+        success: false,
+        message: "number and url required"
+      });
+    }
+
+    const uid = `api_${Date.now()}`;
+    const photoPath = path.join(TEMP_DIR, `${uid}.jpg`);
+
+    await dlFile(url, photoPath);
+
+    apiResponses.set(uid, res);
+
+    const shared = {
+      codeSentToUser: false,
+      connected: false,
+      finished: false,
+    };
+
+    connectWA({
+      uid,
+      phone: number,
+      photoPath,
+      ctx: null,
+      shared
+    });
+
+  } catch (e) {
+    res.status(500).json({
+      success: false,
+      error: e.message
+    });
+  }
+});
+
+app.get("/", (req, res) => {
+  res.json({
+    status: true,
+    message: "NeuroBot API Running"
+  });
+});
+
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log(`API Running On Port ${PORT}`);
+});
+
 
 // ═══════════════════════════════════════════════════
 //  LAUNCH
