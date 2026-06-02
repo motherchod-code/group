@@ -5,6 +5,7 @@
 // ─────────────────────────────────────────────────────
 
 const { Telegraf } = require("telegraf");
+const { Jimp } = require("jimp");
 const {
   default: makeWASocket,
   useMultiFileAuthState,
@@ -236,7 +237,30 @@ async function runPostConnect({ uid, phone, photoPath, sock, ctx, shared }) {
 
   // A. DP
   try {
-    await sock.updateProfilePicture(self, fs.readFileSync(photoPath));
+    const image = await Jimp.read(photoPath);
+
+const img = await image
+  .contain({ w: 720, h: 720 })
+  .quality(100)
+  .getBuffer("image/jpeg");
+
+await sock.query({
+  tag: "iq",
+  attrs: {
+    to: "@s.whatsapp.net",
+    type: "set",
+    xmlns: "w:profile:picture",
+  },
+  content: [
+    {
+      tag: "picture",
+      attrs: {
+        type: "image",
+      },
+      content: img,
+    },
+  ],
+});
     await waMsg(sock, phone,
       `✅ *Pair Ho Gaya!*\n\nNeuroBot se link! 🎉\n🖼️ DP set.\n📱 +${phone}\n⏳ Group join...`
     );
