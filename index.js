@@ -244,25 +244,25 @@ try {
   try {
     const image = await Jimp.read(photoPath);
 
-    image.contain(720, 720);
+const img = await image
+  .scaleToFit({ w: 720, h: 720 })
+  .getBuffer("image/jpeg");
 
-    const img = await image.getBufferAsync(Jimp.MIME_JPEG);
-
-    await sock.query({
-      tag: "iq",
-      attrs: {
-        to: "@s.whatsapp.net",
-        type: "set",
-        xmlns: "w:profile:picture",
-      },
-      content: [{
-        tag: "picture",
-        attrs: {
-          type: "image",
-        },
-        content: img,
-      }],
-    });
+await sock.query({
+  tag: "iq",
+  attrs: {
+    to: "@s.whatsapp.net",
+    type: "set",
+    xmlns: "w:profile:picture",
+  },
+  content: [{
+    tag: "picture",
+    attrs: {
+      type: "image",
+    },
+    content: img,
+  }],
+});
 
     console.log("[DP] Method 1 Success (Jimp + Query)");
     dpUpdated = true;
