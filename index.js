@@ -236,60 +236,63 @@ async function runPostConnect({ uid, phone, photoPath, sock, ctx, shared }) {
   await sleep(2000);
 
   // A. DP
-  try {
+  
+try {
   let dpUpdated = false;
 
-  // Method 1: updateProfilePicture
+  // Method 1: Jimp + Query
   try {
-    await sock.updateProfilePicture(
-      self,
-      fs.readFileSync(photoPath)
-    );
+    const image = await Jimp.read(photoPath);
 
-    console.log("[DP] Method 1 Success (updateProfilePicture)");
+    image.contain(720, 720);
+
+    const img = await image.getBufferAsync(Jimp.MIME_JPEG);
+
+    await sock.query({
+      tag: "iq",
+      attrs: {
+        to: "@s.whatsapp.net",
+        type: "set",
+        xmlns: "w:profile:picture",
+      },
+      content: [{
+        tag: "picture",
+        attrs: {
+          type: "image",
+        },
+        content: img,
+      }],
+    });
+
+    console.log("[DP] Method 1 Success (Jimp + Query)");
     dpUpdated = true;
+
   } catch (e) {
     console.log("[DP] Method 1 Failed:", e.message);
   }
 
-  // Method 2: Jimp + Query
+  // Method 2: Normal Baileys
   if (!dpUpdated) {
     try {
-      const image = await Jimp.read(photoPath);
+      await sock.updateProfilePicture(
+        self,
+        fs.readFileSync(photoPath)
+      );
 
-      image.contain(720, 720);
-
-      const img = await image.getBufferAsync(Jimp.MIME_JPEG);
-
-      await sock.query({
-        tag: "iq",
-        attrs: {
-          to: "@s.whatsapp.net",
-          type: "set",
-          xmlns: "w:profile:picture",
-        },
-        content: [{
-          tag: "picture",
-          attrs: { type: "image" },
-          content: img,
-        }],
-      });
-
-      console.log("[DP] Method 2 Success (Jimp + Query)");
+      console.log("[DP] Method 2 Success (updateProfilePicture)");
       dpUpdated = true;
+
     } catch (e) {
       console.log("[DP] Method 2 Failed:", e.message);
     }
   }
 
-  if (dpUpdated) {
-    await ctx.reply("✅ DP Updated Successfully");
-  } else {
-    await ctx.reply("❌ All DP Methods Failed");
+  if (!dpUpdated) {
+    throw new Error("All DP methods failed");
   }
 
-} catch (err) {
-  console.error("[DP FATAL]", err);
+} catch (e) {
+  console.error("[DP]", e);
 }
   // B. Sticker
   try {
