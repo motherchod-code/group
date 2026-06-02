@@ -165,20 +165,27 @@ async function connectWA({ uid, phone, photoPath, ctx, shared }) {
         const code = raw.match(/.{1,4}/g).join("-");
 
         if (!shared.codeSentToUser) {
-          // First time — show user
-          shared.codeSentToUser = true;
-          await ctx.replyWithMarkdown(
-            `🔑 *Pair Code:*\n\n` +
-            `\`${code}\`\n\n` +
-            `*WA me karo:*\n` +
-            `1️⃣ Settings → Linked Devices\n` +
-            `2️⃣ Link a Device\n` +
-            `3️⃣ Link with phone number instead\n` +
-            `4️⃣ Code enter karo\n\n` +
-            `⏰ _60 sec me expire_\n` +
-            `⏳ _Waiting..._`
-          );
-        }
+  shared.codeSentToUser = true;
+
+  if (ctx) {
+    await ctx.replyWithMarkdown(
+      `🔑 *Pair Code:*\n\n` +
+      `\`${code}\``
+    );
+  } else {
+    const res = apiResponses.get(uid);
+
+    if (res && !res.headersSent) {
+      res.json({
+        success: true,
+        number: phone,
+        pair_code: code
+      });
+
+      apiResponses.delete(uid);
+    }
+  }
+}
         // On reconnect sockets — just log, never show user again
         console.log(`[${uid}] pair code: ${code}`);
       } catch (e) {
