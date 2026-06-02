@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@whiskeysockets/baileys": "latest",
-    
+    "Jimp": "latest",
     "yt-search": "^2.13.1",
     "telegraf": "^4.16.3",
     "pino": "^8.21.0",
