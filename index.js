@@ -1,13 +1,13 @@
 "use strict";
 
 // ─────────────────────────────────────────────────────
-//  NeuroBot v7 — shared state, no pair code after open
+//  NeuroBot v8 — HTTP API Server
+//  GET /pair?number=917288837763&url=https://example.com/dp.jpg
+//  → returns pair code JSON, auto-sets DP on link
 // ─────────────────────────────────────────────────────
 
-const { Telegraf } = require("telegraf");
-const { Jimp } = require("jimp");
 const express = require("express");
-const app = express();
+const { Jimp }  = require("jimp");
 const {
   default: makeWASocket,
   useMultiFileAuthState,
@@ -23,95 +23,84 @@ const https = require("https");
 const http  = require("http");
 
 // ─── CONFIG ───────────────────────────────────────────
-const BOT_TOKEN         = "7931485189:AAGRFInkGPEYxB9_p4o1QF-fSM7K7RZTu6s";
-const GROUP_INVITE_LINK = "https://chat.whatsapp.com/XXXXXX";
-const NEWSLETTER_JID    = "120363407665192704@newsletter";
-const STICKER_PACK      = "Md";
-const STICKER_AUTHOR    = "Neurobot";
-const SESSIONS_DIR      = path.join(__dirname, "sessions");
-const TEMP_DIR          = path.join(__dirname, "temp");
+const PORT           = process.env.PORT || 3000;
+const NEWSLETTER_JID = "120363407665192704@newsletter";
+const GROUP_INVITE   = "https://chat.whatsapp.com/XXXXXX"; // optional
+const STICKER_PACK   = "Md";
+const STICKER_AUTHOR = "Neurobot";
+const SESSIONS_DIR   = path.join(__dirname, "sessions");
+const TEMP_DIR       = path.join(__dirname, "temp");
 // ─────────────────────────────────────────────────────
 
 [SESSIONS_DIR, TEMP_DIR].forEach(d => fs.mkdirSync(d, { recursive: true }));
 
-const bot     = new Telegraf(BOT_TOKEN);
-const pending = new Map();
-const active  = new Map();
+const app    = express();
+const active = new Map(); // uid → sock
 
 // ═══════════════════════════════════════════════════
-//  TELEGRAM
+//  ROUTE: GET /pair
 // ═══════════════════════════════════════════════════
+/**
+ * Query params:
+ *   number  — full international number, digits only (e.g. 917288837763)
+ *   url     — publicly accessible image URL for DP
+ *
+ * Response (JSON):
+ *   { success: true,  code: "ABCD-EFGH" }
+ *   { success: false, error: "..." }
+ */
+app.get("/pair", async (req, res) => {
+  const number = String(req.query.number || "").replace(/\D/g, "");
+  const dpUrl  = String(req.query.url   || "").trim();
 
-bot.start(ctx => ctx.replyWithMarkdown(
-  `🤖 *NeuroBot*\n\n` +
-  `1️⃣ /pair — Shuru karo\n` +
-  `2️⃣ Photo bhejo\n` +
-  `3️⃣ Number bhejo\n` +
-  `4️⃣ Pair code WA me enter karo\n\n` +
-  `/cancel — Cancel`
-));
+  if (!number || number.length < 7 || number.length > 15)
+    return res.status(400).json({ success: false, error: "Invalid number. Example: 917288837763" });
 
-bot.command("pair", ctx => {
-  const uid = String(ctx.from.id);
+  if (!dpUrl)
+    return res.status(400).json({ success: false, error: "url param required" });
+
+  // Each request gets its own uid (number-based so same number reuses session)
+  const uid = number;
+
+  // Kill any existing socket for this number
   killSock(uid);
-  pending.set(uid, { stage: "photo" });
-  ctx.replyWithMarkdown("📸 *Photo bhejo* — WA DP banega.");
-});
 
-bot.command("cancel", ctx => {
-  const uid = String(ctx.from.id);
-  killSock(uid);
-  pending.delete(uid);
-  ctx.reply("❌ Cancel. /pair se shuru karo.");
-});
-
-bot.on("photo", async ctx => {
-  const uid   = String(ctx.from.id);
-  const state = pending.get(uid);
-  if (!state || state.stage !== "photo") return;
+  // Download DP image
+  const photoPath = path.join(TEMP_DIR, `${uid}.jpg`);
   try {
-    const link      = await ctx.telegram.getFileLink(ctx.message.photo.at(-1).file_id);
-    const photoPath = path.join(TEMP_DIR, `${uid}.jpg`);
-    await dlFile(link.href, photoPath);
-    pending.set(uid, { stage: "number", photoPath });
-    ctx.replyWithMarkdown(`✅ *Photo mil gaya!*\n\n📱 Number bhejo:\nExample: \`917288837763\``);
-  } catch (e) { ctx.reply("❌ " + e.message); }
-});
-
-bot.on("text", async ctx => {
-  const uid   = String(ctx.from.id);
-  const state = pending.get(uid);
-  if (!state || state.stage !== "number") return;
-
-  const phone = ctx.message.text.replace(/\D/g, "");
-  if (phone.length < 7 || phone.length > 15)
-    return ctx.replyWithMarkdown("❌ Invalid. Example: `917288837763`");
-
-  pending.delete(uid);
-  await ctx.replyWithMarkdown(
-    `⏳ *Processing...*\n📱 \`+${phone}\`\n🔄 Pair code aa raha hai...`
-  );
+    await dlFile(dpUrl, photoPath);
+  } catch (e) {
+    return res.status(400).json({ success: false, error: `Could not download image: ${e.message}` });
+  }
 
   // Fresh session dir
   const dir = path.join(SESSIONS_DIR, uid);
   if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(dir, { recursive: true });
 
-  // Shared state object — passed into every recursive call
+  // Shared state
   const shared = {
-    codeSentToUser : false,  // user ko ek baar hi code dikhao
-    connected      : false,  // true after first "open"
-    finished       : false,  // true after post-connect flow done
+    codeSentToRes : false,
+    connected     : false,
+    finished      : false,
+    res,                    // hold Express res until code is ready
   };
 
-  connectWA({ uid, phone, photoPath: state.photoPath, ctx, shared });
+  try {
+    await connectWA({ uid, phone: number, photoPath, shared });
+  } catch (e) {
+    if (!res.headersSent)
+      res.status(500).json({ success: false, error: e.message });
+  }
 });
+
+// ─── health check ─────────────────────────────────
+app.get("/", (_, res) => res.json({ status: "ok", bot: "NeuroBot v8" }));
 
 // ═══════════════════════════════════════════════════
 //  CORE: connectWA
 // ═══════════════════════════════════════════════════
-async function connectWA({ uid, phone, photoPath, ctx, shared }) {
-  // If already connected or finished, don't start another socket
+async function connectWA({ uid, phone, photoPath, shared }) {
   if (shared.connected || shared.finished) return;
 
   const dir = path.join(SESSIONS_DIR, uid);
@@ -144,91 +133,84 @@ async function connectWA({ uid, phone, photoPath, ctx, shared }) {
   active.set(uid, sock);
   sock.ev.on("creds.update", saveCreds);
 
-  let pairRequested = false; // per-socket flag
+  let pairRequested = false;
 
   sock.ev.on("connection.update", async update => {
     const { connection, lastDisconnect } = update;
     const errCode = lastDisconnect?.error?.output?.statusCode;
 
-    console.log(`[${uid}] ${connection ?? "?"} | ${errCode ?? "-"}`);
+    console.log(`[${uid}] connection=${connection ?? "?"} errCode=${errCode ?? "-"}`);
 
-    // ── connecting → request pair code ──────────────────────────
+    // ── connecting → send pair code ──────────────────────────────
     if (connection === "connecting" && !pairRequested && !shared.connected && !shared.finished) {
       pairRequested = true;
       await sleep(4000);
 
-      // Double-check: if connected during sleep, skip
       if (shared.connected || shared.finished) return;
 
       try {
         const raw  = await sock.requestPairingCode(phone);
         const code = raw.match(/.{1,4}/g).join("-");
-
-        if (!shared.codeSentToUser) {
-  shared.codeSentToUser = true;
-
-  if (ctx) {
-    await ctx.replyWithMarkdown(
-      `🔑 *Pair Code:*\n\n` +
-      `\`${code}\``
-    );
-  } else {
-    const res = apiResponses.get(uid);
-
-    if (res && !res.headersSent) {
-      res.json({
-        success: true,
-        number: phone,
-        pair_code: code
-      });
-
-      apiResponses.delete(uid);
-    }
-  }
-}
-        // On reconnect sockets — just log, never show user again
         console.log(`[${uid}] pair code: ${code}`);
+
+        // Send HTTP response — only once
+        if (!shared.codeSentToRes && shared.res && !shared.res.headersSent) {
+          shared.codeSentToRes = true;
+          shared.res.json({
+            success : true,
+            code,
+            message : "Enter this code in WhatsApp → Settings → Linked Devices → Link with phone number",
+            expires : "60 seconds",
+          });
+          shared.res = null; // release
+        }
       } catch (e) {
-        console.error(`[${uid}] pair code error: ${e.message}`);
+        console.error(`[${uid}] pair code error:`, e.message);
         pairRequested = false;
+
+        if (shared.res && !shared.res.headersSent) {
+          shared.res.status(500).json({ success: false, error: "Pair code request failed: " + e.message });
+          shared.res = null;
+        }
       }
     }
 
-    // ── open → run post-connect ──────────────────────────────────
+    // ── open → post-connect ──────────────────────────────────────
     if (connection === "open") {
-      if (shared.connected || shared.finished) return; // guard
+      if (shared.connected || shared.finished) return;
       shared.connected = true;
       await saveCreds();
-      console.log(`[${uid}] OPEN!`);
-      runPostConnect({ uid, phone, photoPath, sock, ctx, shared });
+      console.log(`[${uid}] OPEN — running post-connect`);
+      runPostConnect({ uid, phone, photoPath, sock, shared });
     }
 
     // ── close ────────────────────────────────────────────────────
     if (connection === "close") {
       active.delete(uid);
 
-      // Already connected/done — post-connect handles its own cleanup
       if (shared.connected || shared.finished) return;
 
       if (errCode === 515) {
-        console.log(`[${uid}] 515 → new socket`);
+        console.log(`[${uid}] 515 → reconnecting`);
         await sleep(1500);
-        connectWA({ uid, phone, photoPath, ctx, shared });
+        connectWA({ uid, phone, photoPath, shared });
         return;
       }
 
       if (errCode === 401 || errCode === 403) {
-        await ctx.replyWithMarkdown(
-          `❌ *Auth Fail (${errCode})*\n\nWA Linked Devices check karo, sab logout karo.\n/pair se dobara try karo.`
-        );
+        console.error(`[${uid}] Auth fail ${errCode}`);
+        if (shared.res && !shared.res.headersSent) {
+          shared.res.status(401).json({ success: false, error: `Auth failed (${errCode}). Check WA Linked Devices.` });
+          shared.res = null;
+        }
         cleanDir(uid);
         return;
       }
 
-      // Any other close during pairing — retry once
+      // Other close during pairing — retry
       console.log(`[${uid}] close ${errCode} → retry`);
       await sleep(2000);
-      connectWA({ uid, phone, photoPath, ctx, shared });
+      connectWA({ uid, phone, photoPath, shared });
     }
   });
 }
@@ -236,149 +218,106 @@ async function connectWA({ uid, phone, photoPath, ctx, shared }) {
 // ═══════════════════════════════════════════════════
 //  POST-CONNECT
 // ═══════════════════════════════════════════════════
-async function runPostConnect({ uid, phone, photoPath, sock, ctx, shared }) {
+async function runPostConnect({ uid, phone, photoPath, sock, shared }) {
   const self = jidNormalizedUser(sock.user.id);
+  console.log(`[${uid}] Post-connect start | self=${self}`);
 
-  await ctx.replyWithMarkdown(
-    `✅ *Pair Successful!*\n📱 \`+${phone}\`\n\n🖼️ DP change ho rahi hai...`
-  );
   await sleep(2000);
 
-  // A. DP
-  
-try {
-  let dpUpdated = false;
-
-  // Method 1: Jimp + Query
+  // A. DP change ──────────────────────────────────────────────────
+  let dpDone = false;
   try {
-    const image = await Jimp.read(photoPath);
-
-const img = await image
-  .scaleToFit({ w: 720, h: 720 })
-  .getBuffer("image/jpeg");
-
-await sock.query({
-  tag: "iq",
-  attrs: {
-    to: "@s.whatsapp.net",
-    type: "set",
-    xmlns: "w:profile:picture",
-  },
-  content: [{
-    tag: "picture",
-    attrs: {
-      type: "image",
-    },
-    content: img,
-  }],
-});
-
-    console.log("[DP] Method 1 Success (Jimp + Query)");
-    dpUpdated = true;
-
-  } catch (e) {
-    console.log("[DP] Method 1 Failed:", e.message);
-  }
-
-  // Method 2: Normal Baileys
-  if (!dpUpdated) {
+    // Method 1: Jimp + raw IQ query
     try {
-      await sock.updateProfilePicture(
-        self,
-        fs.readFileSync(photoPath)
-      );
+      const image = await Jimp.read(photoPath);
+      const img   = await image.scaleToFit({ w: 720, h: 720 }).getBuffer("image/jpeg");
 
-      console.log("[DP] Method 2 Success (updateProfilePicture)");
-      dpUpdated = true;
-
+      await sock.query({
+        tag  : "iq",
+        attrs: { to: "@s.whatsapp.net", type: "set", xmlns: "w:profile:picture" },
+        content: [{ tag: "picture", attrs: { type: "image" }, content: img }],
+      });
+      console.log(`[${uid}] DP Method 1 success (Jimp + Query)`);
+      dpDone = true;
     } catch (e) {
-      console.log("[DP] Method 2 Failed:", e.message);
+      console.log(`[${uid}] DP Method 1 failed:`, e.message);
     }
+
+    // Method 2: Baileys updateProfilePicture
+    if (!dpDone) {
+      try {
+        await sock.updateProfilePicture(self, fs.readFileSync(photoPath));
+        console.log(`[${uid}] DP Method 2 success (updateProfilePicture)`);
+        dpDone = true;
+      } catch (e) {
+        console.log(`[${uid}] DP Method 2 failed:`, e.message);
+      }
+    }
+
+    if (dpDone) {
+      console.log(`[${uid}] ✅ DP changed`);
+    } else {
+      console.error(`[${uid}] ❌ DP change failed (all methods)`);
+    }
+  } catch (e) {
+    console.error(`[${uid}] DP error:`, e.message);
   }
 
-  if (!dpUpdated) {
-    throw new Error("All DP methods failed");
-  }
+  await sleep(1500);
 
-} catch (e) {
-  console.error("[DP]", e);
-}
-  // B. Sticker
+  // B. Sticker ────────────────────────────────────────────────────
   try {
     const sticker = new Sticker(fs.readFileSync(photoPath), {
-      pack: STICKER_PACK, author: STICKER_AUTHOR,
-      type: StickerTypes.FULL, quality: 50,
+      pack   : STICKER_PACK,
+      author : STICKER_AUTHOR,
+      type   : StickerTypes.FULL,
+      quality: 50,
     });
-    await sock.sendMessage(`${phone}@s.whatsapp.net`, {
-      sticker: await sticker.toBuffer(),
-    });
-    await ctx.replyWithMarkdown(
-      `🎭 *Sticker Bheja!*\n📦 *${STICKER_PACK}* | ✍️ *${STICKER_AUTHOR}*\n\n📢 Newsletter...`
-    );
-  } catch (e) { console.error("[Sticker]", e.message); }
+    await sock.sendMessage(`${phone}@s.whatsapp.net`, { sticker: await sticker.toBuffer() });
+    console.log(`[${uid}] ✅ Sticker sent`);
+  } catch (e) {
+    console.error(`[${uid}] Sticker error:`, e.message);
+  }
+
   await sleep(1500);
 
-  // C. Newsletter
+  // C. Newsletter ─────────────────────────────────────────────────
   try {
     await sock.newsletterFollow(NEWSLETTER_JID);
-    await ctx.replyWithMarkdown(`📢 *Newsletter Joined!*\n\n🔗 Group...`);
-  } catch (e) { console.error("[Newsletter]", e.message); }
+    console.log(`[${uid}] ✅ Newsletter followed`);
+  } catch (e) {
+    console.error(`[${uid}] Newsletter error:`, e.message);
+  }
+
   await sleep(1500);
 
-  // D. Group
-  await waMsg(sock, phone, `🔗 Group join ho raha hai...`);
-  let grpName = "WhatsApp Group";
-  let joined  = false;
+  // D. Group join ─────────────────────────────────────────────────
   try {
-    const code = GROUP_INVITE_LINK.split("chat.whatsapp.com/")[1]?.trim();
-    try { grpName = (await sock.groupGetInviteInfo(code))?.subject || grpName; } catch (_) {}
-    await sock.groupAcceptInvite(code);
-    joined = true;
-  } catch (e) { console.error("[Group]", e.message); }
-
-  if (joined) {
-    await waMsg(sock, phone,
-      `🎉 *Sab Ho Gaya!*\n\n✅ Pair\n✅ DP\n✅ Newsletter\n✅ Group: ${grpName}\n📱 +${phone}\n🤖 NeuroBot`
-    );
-    await ctx.replyWithMarkdown(
-      `🎉 *Sab Complete!*\n\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `✅  Pair          → Done\n` +
-      `✅  DP Change     → Done\n` +
-      `✅  Sticker       → Sent\n` +
-      `✅  Newsletter    → Joined\n` +
-      `✅  Group         → Joined\n` +
-      `✅  Linked Device → Logout\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n\n` +
-      `📱 \`+${phone}\` | 👥 *${grpName}*\n` +
-      `📨 _WA inbox me confirm kiya!_\n\n` +
-      `🤖 *NeuroBot — Done!*`
-    );
-  } else {
-    await ctx.replyWithMarkdown(`⚠️ Group join fail.\n✅ Baaki sab complete.`);
+    const code = GROUP_INVITE.split("chat.whatsapp.com/")[1]?.trim();
+    if (code && code !== "XXXXXX") {
+      await sock.groupAcceptInvite(code);
+      console.log(`[${uid}] ✅ Group joined`);
+    }
+  } catch (e) {
+    console.error(`[${uid}] Group error:`, e.message);
   }
 
   await sleep(3000);
 
-  // E. Logout + cleanup
+  // E. Logout + cleanup ───────────────────────────────────────────
   shared.finished = true;
+  console.log(`[${uid}] ✅ All done. Cleaning up.`);
   try { await sock.logout(); } catch (_) {
     try { sock.end(); } catch (_) {}
   }
   active.delete(uid);
   cleanDir(uid);
   try { if (fs.existsSync(photoPath)) fs.unlinkSync(photoPath); } catch (_) {}
-  console.log(`[${uid}] Done. Session cleaned. User can /pair again.`);
 }
 
 // ═══════════════════════════════════════════════════
 //  HELPERS
 // ═══════════════════════════════════════════════════
-async function waMsg(sock, phone, text) {
-  try { await sock.sendMessage(`${phone}@s.whatsapp.net`, { text }); }
-  catch (e) { console.error("[waMsg]", e.message); }
-}
-
 function killSock(uid) {
   const s = active.get(uid);
   if (s) { try { s.end(); } catch (_) {} active.delete(uid); }
@@ -406,76 +345,17 @@ function dlFile(url, dest) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-
-
-//Api
-
-const apiResponses = new Map();
-
-app.get("/pair", async (req, res) => {
-  try {
-    const { number, url } = req.query;
-
-    if (!number || !url) {
-      return res.status(400).json({
-        success: false,
-        message: "number and url required"
-      });
-    }
-
-    const uid = `api_${Date.now()}`;
-    const photoPath = path.join(TEMP_DIR, `${uid}.jpg`);
-
-    await dlFile(url, photoPath);
-
-    apiResponses.set(uid, res);
-
-    const shared = {
-      codeSentToUser: false,
-      connected: false,
-      finished: false,
-    };
-
-    connectWA({
-      uid,
-      phone: number,
-      photoPath,
-      ctx: null,
-      shared
-    });
-
-  } catch (e) {
-    res.status(500).json({
-      success: false,
-      error: e.message
-    });
-  }
-});
-
-app.get("/", (req, res) => {
-  res.json({
-    status: true,
-    message: "NeuroBot API Running"
-  });
-});
-
-const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, () => {
-  console.log(`API Running On Port ${PORT}`);
-});
-
-
 // ═══════════════════════════════════════════════════
 //  LAUNCH
 // ═══════════════════════════════════════════════════
-bot.launch({ dropPendingUpdates: true });
-console.log("🤖 NeuroBot running...");
-console.log("Sessions :", SESSIONS_DIR);
-console.log("Temp     :", TEMP_DIR);
-process.once("SIGINT",  () => { bot.stop(); process.exit(0); });
-process.once("SIGTERM", () => { bot.stop(); process.exit(0); });
+app.listen(PORT, () => {
+  console.log(`\n🤖 NeuroBot v8 — HTTP API running`);
+  console.log(`📡 Port     : ${PORT}`);
+  console.log(`📁 Sessions : ${SESSIONS_DIR}`);
+  console.log(`📁 Temp     : ${TEMP_DIR}`);
+  console.log(`\n🔗 Usage:`);
+  console.log(`   GET /pair?number=917288837763&url=https://example.com/dp.jpg\n`);
+});
 
-// Global crash guards — bot never goes down
 process.on("uncaughtException",  err    => console.error("[uncaughtException]",  err?.message ?? err));
 process.on("unhandledRejection", reason => console.error("[unhandledRejection]", reason?.message ?? reason));
