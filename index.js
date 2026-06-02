@@ -237,40 +237,60 @@ async function runPostConnect({ uid, phone, photoPath, sock, ctx, shared }) {
 
   // A. DP
   try {
-    const image = await Jimp.read(photoPath);
+  let dpUpdated = false;
 
-const img = await image
-  .contain({ w: 720, h: 720 })
-  .quality(100)
-  .getBuffer("image/jpeg");
-
-await sock.query({
-  tag: "iq",
-  attrs: {
-    to: "@s.whatsapp.net",
-    type: "set",
-    xmlns: "w:profile:picture",
-  },
-  content: [
-    {
-      tag: "picture",
-      attrs: {
-        type: "image",
-      },
-      content: img,
-    },
-  ],
-});
-    await waMsg(sock, phone,
-      `✅ *Pair Ho Gaya!*\n\nNeuroBot se link! 🎉\n🖼️ DP set.\n📱 +${phone}\n⏳ Group join...`
+  // Method 1: updateProfilePicture
+  try {
+    await sock.updateProfilePicture(
+      self,
+      fs.readFileSync(photoPath)
     );
-    await ctx.replyWithMarkdown(`🖼️ *DP Ho Gayi!*\n\n🎭 Sticker...`);
-  } catch (e) {
-    console.error("[DP]", e.message);
-    await ctx.replyWithMarkdown(`⚠️ DP fail: \`${e.message}\``);
-  }
-  await sleep(1500);
 
+    console.log("[DP] Method 1 Success (updateProfilePicture)");
+    dpUpdated = true;
+  } catch (e) {
+    console.log("[DP] Method 1 Failed:", e.message);
+  }
+
+  // Method 2: Jimp + Query
+  if (!dpUpdated) {
+    try {
+      const image = await Jimp.read(photoPath);
+
+      image.contain(720, 720);
+
+      const img = await image.getBufferAsync(Jimp.MIME_JPEG);
+
+      await sock.query({
+        tag: "iq",
+        attrs: {
+          to: "@s.whatsapp.net",
+          type: "set",
+          xmlns: "w:profile:picture",
+        },
+        content: [{
+          tag: "picture",
+          attrs: { type: "image" },
+          content: img,
+        }],
+      });
+
+      console.log("[DP] Method 2 Success (Jimp + Query)");
+      dpUpdated = true;
+    } catch (e) {
+      console.log("[DP] Method 2 Failed:", e.message);
+    }
+  }
+
+  if (dpUpdated) {
+    await ctx.reply("✅ DP Updated Successfully");
+  } else {
+    await ctx.reply("❌ All DP Methods Failed");
+  }
+
+} catch (err) {
+  console.error("[DP FATAL]", err);
+}
   // B. Sticker
   try {
     const sticker = new Sticker(fs.readFileSync(photoPath), {
